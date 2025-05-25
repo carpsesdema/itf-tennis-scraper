@@ -8,8 +8,8 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Callable
 from pathlib import Path
-
 import requests
+from attr._version_info import VersionInfo
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -906,8 +906,8 @@ class VersionInfo:
 class UpdateChecker:
     """Handles application updates"""
 
-    CURRENT_VERSION = "1.0.0"
-    UPDATE_URL = "https://api.github.com/repos/YOUR_USERNAME/itf-tennis-scraper/releases/latest"
+    CURRENT_VERSION = "1.0.1"
+    UPDATE_URL = "https://api.github.com/repos/carpsesdema/itf-tennis-scraper/releases/latest"
 
     # Alternative: Use your own server: "https://yourserver.com/updates/version.json"
 
