@@ -217,4 +217,4 @@ client_data/
 # - Keep client-specific configurations separate
 # - Build artifacts should be generated, not stored
 # - Log files can contain sensitive information
-# - Always review what you're committing with 'git status'
+# - Always review what you're committing with 'git status'!/tennis_scraper/updates/

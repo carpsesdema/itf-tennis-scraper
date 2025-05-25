@@ -1,6 +1,9 @@
 """
-Styling and theming for the GUI.
+Styling and theming system for the GUI.
 """
 
-# These would be implemented as needed
-__all__ = []
+from .themes import ThemeManager, apply_theme
+from .dark_theme import DarkTheme
+from .light_theme import LightTheme
+
+__all__ = ["ThemeManager", "apply_theme", "DarkTheme", "LightTheme"]
