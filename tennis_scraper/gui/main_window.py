@@ -191,7 +191,7 @@ class MainWindow(QMainWindow):
         self.control_panel.set_scraping_state(True) # Indicate activity
 
         # Use a one-time worker
-        single_run_worker = ScrapingWorker(self.engine, single_run=True)
+        single_run_worker = ScrapingWorker(self.engine, single_run=False)
         single_run_worker.matches_updated.connect(self._on_matches_updated)
         single_run_worker.status_updated.connect(self.status_bar.set_status)
         single_run_worker.error_occurred.connect(self._on_scraping_error)

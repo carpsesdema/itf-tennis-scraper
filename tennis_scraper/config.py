@@ -11,6 +11,7 @@ from typing import Dict, Any, Optional, List # Added List
 from .utils.logging import get_logger
 
 
+
 @dataclass
 class ScrapingConfig:
     """Configuration for scraping operations."""
@@ -21,21 +22,22 @@ class ScrapingConfig:
     user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     sources_enabled: Dict[str, bool] = field(default_factory=lambda: {
         'flashscore': True,
-        'sofascore': True,
-        'itf_official': False
+        # Removed sofascore - only need flashscore for bet365 verification
     })
     flashscore_bet365_indicator_fragment: str = "/549/"
-    # --- ADDED FOR MATCH TIE BREAK SCENARIO ---
     flashscore_match_tie_break_keywords: List[str] = field(
         default_factory=lambda: [
             "match tie break",
             "match tie-break",
             "match tb",
-            "super tiebreak", # Common alternative term
-            "mtb" # Common abbreviation
+            "super tiebreak",
+            "super tie-break",
+            "mtb",
+            "stb",
+            "first to 10",
+            "race to 10"
         ]
     )
-    # --- END ADDED ---
 
 
 @dataclass

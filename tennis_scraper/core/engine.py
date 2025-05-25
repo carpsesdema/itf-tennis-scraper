@@ -9,8 +9,6 @@ from typing import List, Dict, Any, Callable # Removed Optional as it's unused
 from .models import TennisMatch, ScrapingResult
 from .interfaces import MatchScraper, MatchFilter
 from ..scrapers.flashscore import FlashscoreScraper
-from ..scrapers.sofascore import SofascoreScraper
-# from ..scrapers.itf_official import ITFOfficialScraper # Assuming you'll create this later
 from ..utils.logging import get_logger, PerformanceLogger
 
 
@@ -33,8 +31,6 @@ class TennisScrapingEngine:
 
         scraper_classes = {
             'flashscore': FlashscoreScraper,
-            'sofascore': SofascoreScraper,
-            # 'itf_official': ITFOfficialScraper, # Add when implemented
         }
 
         for name, ScraperClass in scraper_classes.items():

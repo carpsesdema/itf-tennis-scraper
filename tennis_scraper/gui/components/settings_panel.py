@@ -169,18 +169,17 @@ class SettingsPanel(QScrollArea):
         sources_group = QGroupBox("Data Sources")
         sources_layout = QVBoxLayout(sources_group)
 
-        # Source checkboxes
+        # Source checkboxes - ONLY FLASHSCORE NOW
         self.source_checkboxes = {}
 
         for source_name, enabled in self.config.scraping.sources_enabled.items():
             cb = QCheckBox(f"Enable {source_name.title()}")
             cb.setChecked(enabled)
 
-            # Add descriptions
+            # Add descriptions - ONLY FLASHSCORE
             descriptions = {
-                'flashscore': 'Fast updates, comprehensive coverage',
-                'sofascore': 'Detailed statistics and live scores',
-                'itf_official': 'Official ITF data (may require API access)'
+                'flashscore': 'Fast updates, comprehensive coverage, bet365 indicators',
+                # Removed sofascore and itf_official descriptions
             }
 
             if source_name in descriptions:
@@ -189,16 +188,12 @@ class SettingsPanel(QScrollArea):
             self.source_checkboxes[source_name] = cb
             sources_layout.addWidget(cb)
 
-        # Source priority
-        priority_group = QGroupBox("Source Priority")
-        priority_layout = QFormLayout(priority_group)
-
-        priority_label = QLabel("Higher priority sources are scraped first")
-        priority_label.setStyleSheet("color: #888; font-style: italic;")
-        priority_layout.addRow(priority_label)
+        # Add note about bet365 requirement
+        bet365_note = QLabel("Note: Flashscore is required for bet365 betting indicator detection")
+        bet365_note.setStyleSheet("color: #888; font-style: italic; margin-top: 10px;")
+        sources_layout.addWidget(bet365_note)
 
         layout.addWidget(sources_group)
-        layout.addWidget(priority_group)
         layout.addStretch()
 
         self.tab_widget.addTab(widget, "Sources")
