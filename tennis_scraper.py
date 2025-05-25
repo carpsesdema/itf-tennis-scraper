@@ -906,7 +906,7 @@ class VersionInfo:
 class UpdateChecker:
     """Handles application updates"""
 
-    CURRENT_VERSION = "1.0.1"
+    CURRENT_VERSION = "1.0.5"
     UPDATE_URL = "https://api.github.com/repos/carpsesdema/itf-tennis-scraper/releases/latest"
 
     # Alternative: Use your own server: "https://yourserver.com/updates/version.json"

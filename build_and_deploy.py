@@ -34,7 +34,7 @@ class TennisScraperBuilder:
         self.icon_file = "app_icon.ico"  # Optional
 
         # GitHub configuration (if using GitHub releases)
-        self.github_repo = "YOUR_USERNAME/itf-tennis-scraper"  # Update this
+        self.github_repo = os.getenv('GITHUB_REPO', 'carpsesdema/itf-tennis-scraper')
         self.github_token = os.getenv("GITHUB_TOKEN")  # Set this as environment variable
 
     def clean_build_dirs(self):
