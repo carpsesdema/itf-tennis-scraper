@@ -1,4 +1,4 @@
-"""Flashscore scraper implementation using Playwright with robust LIVE tab clicking."""
+"""Flashscore scraper implementation using Playwright with FIXED bet365 detection."""
 
 import asyncio
 import re
@@ -350,7 +350,7 @@ class FlashscoreScraper(BaseScraper):
                 timestamp=datetime.now(timezone.utc)
             )
 
-        self.logger.info(f"Flashscore: Filtering for matches with data-bookmaker-id='{bookmaker_id_to_check}'")
+        self.logger.info(f"Flashscore: Looking for bet365 matches with bookmaker-id='{bookmaker_id_to_check}'")
 
         match_tie_break_keywords = self.config.get('flashscore_match_tie_break_keywords', [])
         headless_mode = self.config.get('headless_browser', True)
@@ -445,6 +445,9 @@ class FlashscoreScraper(BaseScraper):
             processed_elements_count = len(match_elements)
 
             # Process each match element
+            bet365_matches_found = 0
+            total_bet_wrappers_found = 0
+
             for element_index, sel_element in enumerate(match_elements):
                 try:
                     # Extract player names
@@ -452,26 +455,48 @@ class FlashscoreScraper(BaseScraper):
                     away_player_name = await self._get_text_from_selectors(sel_element, [".event__participant--away"])
 
                     if not home_player_name or not away_player_name:
+                        self.logger.debug(f"Skipping match {element_index} - missing player names")
                         continue
 
-                    # Check for bet365 indicator
+                    # FIXED BET365 DETECTION - Check for liveBetWrapper with correct bookmaker ID
                     has_bet365_indicator = False
-                    bet_indicator_selectors = [
-                        f"div.liveBetWrapper[data-bookmaker-id='{bookmaker_id_to_check}']",
-                        f"a[data-bookmaker-id='{bookmaker_id_to_check}']",
-                        f".wcl-badgeLiveBet_1QP3r[data-bookmaker-id='{bookmaker_id_to_check}']"
-                    ]
+                    debug_info = []
 
-                    for selector in bet_indicator_selectors:
-                        b365_element = await sel_element.query_selector(selector)
-                        if b365_element:
-                            has_bet365_indicator = True
-                            break
+                    try:
+                        # Look for liveBetWrapper elements in this match
+                        bet_wrappers = await sel_element.query_selector_all("div.liveBetWrapper")
+                        total_bet_wrappers_found += len(bet_wrappers)
+
+                        if bet_wrappers:
+                            debug_info.append(f"Found {len(bet_wrappers)} liveBetWrapper elements")
+
+                            for wrapper in bet_wrappers:
+                                bookmaker_id = await wrapper.get_attribute("data-bookmaker-id")
+                                debug_info.append(f"  Bookmaker ID: {bookmaker_id}")
+
+                                if bookmaker_id == bookmaker_id_to_check:
+                                    has_bet365_indicator = True
+                                    debug_info.append(f"  ✅ MATCH! Found bet365")
+                                    break
+                        else:
+                            debug_info.append("No liveBetWrapper elements found")
+
+                    except Exception as e:
+                        debug_info.append(f"Error during bet365 check: {e}")
+
+                    # Log debug info for first few matches or when bet365 is found
+                    if element_index < 3 or has_bet365_indicator:
+                        match_info = f"{home_player_name} vs {away_player_name}"
+                        self.logger.info(f"🔍 Match {element_index + 1}: {match_info}")
+                        for info in debug_info:
+                            self.logger.info(f"    {info}")
 
                     if not has_bet365_indicator:
                         continue  # Skip matches without bet365 indicator
 
-                    self.logger.info(f"Bet365 Match Found & Processing: {home_player_name} vs {away_player_name}")
+                    bet365_matches_found += 1
+                    self.logger.info(
+                        f"🎯 BET365 MATCH #{bet365_matches_found}: {home_player_name} vs {away_player_name}")
 
                     # Extract match details
                     home_score = await self._get_text_from_selectors(sel_element, [".event__score--home"])
@@ -496,7 +521,7 @@ class FlashscoreScraper(BaseScraper):
                     if id_part_from_raw:
                         match_id = f"flashscore_{id_part_from_raw}"
                     else:
-                        match_id = f"flashscore_idx_{element_index}_{home_player_name[:3]}_{away_player_name[:3]}"
+                        match_id = f"flashscore_bet365_{element_index}_{home_player_name[:3]}_{away_player_name[:3]}"
                         self.logger.warning(
                             f"Using fallback ID for {home_player_name} vs {away_player_name}: {match_id}")
 
@@ -507,13 +532,17 @@ class FlashscoreScraper(BaseScraper):
                         for keyword in match_tie_break_keywords:
                             if keyword.lower() in status_lower:
                                 is_match_tie_break = True
+                                self.logger.info(
+                                    f"🚨 TIE BREAK DETECTED: {home_player_name} vs {away_player_name} - '{keyword}' found in status")
                                 break
 
                     # Create metadata
                     metadata_dict = {
                         'flashscore_raw_id': match_id_raw or f"index_{element_index}",
                         'has_bet365_indicator': True,
-                        'is_match_tie_break': is_match_tie_break
+                        'is_match_tie_break': is_match_tie_break,
+                        'bet365_bookmaker_id': bookmaker_id_to_check,
+                        'element_index': element_index
                     }
 
                     # Create match object
@@ -542,8 +571,19 @@ class FlashscoreScraper(BaseScraper):
                     self.logger.warning(f"Extraction error for match (idx {element_index}): {e_extract}", exc_info=True)
 
             success = True
+
+            # Enhanced logging
+            self.logger.info(f"📊 SCRAPING SUMMARY:")
+            self.logger.info(f"  Total match elements processed: {processed_elements_count}")
+            self.logger.info(f"  Total liveBetWrapper elements found: {total_bet_wrappers_found}")
+            self.logger.info(f"  Bet365 matches found (ID={bookmaker_id_to_check}): {len(matches_found)}")
+
+            tie_break_matches = [m for m in matches_found if m.metadata.get('is_match_tie_break')]
+            if tie_break_matches:
+                self.logger.critical(f"🚨 {len(tie_break_matches)} TIE BREAK MATCHES FOUND WITH BET365!")
+
             if not error_message and not matches_found and processed_elements_count > 0:
-                error_message = "Processed elements but no Bet365 matches met criteria after filtering."
+                error_message = f"Processed {processed_elements_count} elements but no bet365 matches found (bookmaker-id={bookmaker_id_to_check})"
             elif not error_message and not matches_found and processed_elements_count == 0:
                 error_message = "No match elements found on the page to process."
 
@@ -581,12 +621,6 @@ class FlashscoreScraper(BaseScraper):
             self.logger.info("Playwright resources for Flashscore cleaned up.")
 
         duration = (datetime.now(timezone.utc) - start_time_dt).total_seconds()
-        self.logger.info(
-            f"Flashscore: Processed {processed_elements_count} elements. "
-            f"Found {len(matches_found)} Bet365 matches. "
-            f"Success: {success}. Duration: {duration:.2f}s. "
-            f"Error: {error_message or 'None'}"
-        )
 
         return ScrapingResult(
             source=source_name,
@@ -598,7 +632,8 @@ class FlashscoreScraper(BaseScraper):
             metadata={
                 'processed_elements': processed_elements_count,
                 'bet365_matches_found': len(matches_found),
-                'tie_break_matches': len([m for m in matches_found if m.metadata.get('is_match_tie_break')])
+                'tie_break_matches': len([m for m in matches_found if m.metadata.get('is_match_tie_break')]),
+                'bookmaker_id_searched': bookmaker_id_to_check
             }
         )
 
