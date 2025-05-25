@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QThread
 from typing import List
 from pathlib import Path
+import asyncio  # For the worker
 
 from ...core.models import TennisMatch
 from ...utils.export import ExportManager
@@ -14,56 +15,58 @@ from ...utils.logging import get_logger
 
 class ExportWorker(QThread):
     """Worker thread for exporting data."""
-
-    progress_updated = Signal(int)
-    export_completed = Signal(str)
-    export_failed = Signal(str)
+    progress_updated = Signal(int)  # Percentage 0-100
+    export_completed = Signal(str)  # Filepath
+    export_failed = Signal(str)  # Error message
 
     def __init__(self, matches: List[TennisMatch], output_path: str,
-                 format_name: str, options: dict):
-        super().__init__()
+                 format_name: str, options: dict, parent=None):
+        super().__init__(parent)
         self.matches = matches
         self.output_path = output_path
         self.format_name = format_name
         self.options = options
         self.export_manager = ExportManager()
+        self.logger = get_logger(__name__)  # Add logger to worker
 
     def run(self):
         """Run export in background."""
+        loop = None
         try:
+            self.logger.info(f"ExportWorker started for {self.output_path} (format: {self.format_name})")
             self.progress_updated.emit(0)
 
-            # Simulate progress for user feedback
-            import asyncio
-            import time
-
-            # Create event loop for async export
+            # Create a new event loop for this thread
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
-            self.progress_updated.emit(25)
-            time.sleep(0.1)
+            # Simulate some progress steps if actual progress is hard to get
+            self.progress_updated.emit(10)
 
+            # Perform the async export operation
             success = loop.run_until_complete(
                 self.export_manager.export_matches(
                     self.matches, self.output_path, self.format_name, **self.options
                 )
             )
 
-            self.progress_updated.emit(75)
-            time.sleep(0.1)
+            self.progress_updated.emit(90)  # Mark near completion
 
             if success:
                 self.progress_updated.emit(100)
                 self.export_completed.emit(self.output_path)
+                self.logger.info(f"ExportWorker successfully exported to {self.output_path}")
             else:
-                self.export_failed.emit("Export operation failed")
+                self.export_failed.emit(f"Export operation failed for {self.output_path}")
+                self.logger.error(f"ExportWorker: ExportManager reported failure for {self.output_path}")
 
         except Exception as e:
+            self.logger.error(f"ExportWorker error during export to {self.output_path}: {e}", exc_info=True)
             self.export_failed.emit(str(e))
         finally:
-            if 'loop' in locals():
+            if loop:
                 loop.close()
+            self.logger.info(f"ExportWorker finished for {self.output_path}")
 
 
 class ExportDialog(QDialog):
@@ -73,30 +76,27 @@ class ExportDialog(QDialog):
         super().__init__(parent)
         self.matches = matches
         self.logger = get_logger(__name__)
+        self.export_manager = ExportManager()  # For getting formats
         self.export_worker = None
 
         self._init_ui()
         self._connect_signals()
-        self._populate_preview()
+        self._update_preview()  # Initial preview
 
     def _init_ui(self):
-        """Initialize the user interface."""
         self.setWindowTitle("Export Tennis Matches")
-        self.setFixedSize(600, 500)
-        self.setWindowModality(Qt.ApplicationModal)
+        self.setMinimumWidth(550)  # Adjusted size
+        self.setModal(True)  # Ensure it's modal
 
         layout = QVBoxLayout(self)
 
-        # Export settings
         settings_group = QGroupBox("Export Settings")
         settings_layout = QFormLayout(settings_group)
 
-        # Format selection
         self.format_combo = QComboBox()
-        self.format_combo.addItems(["CSV", "JSON", "Excel"])
+        self.format_combo.addItems(self.export_manager.get_supported_formats())  # Populate from manager
         settings_layout.addRow("Format:", self.format_combo)
 
-        # File path
         path_layout = QHBoxLayout()
         self.path_edit = QLineEdit()
         self.path_edit.setPlaceholderText("Choose export location...")
@@ -105,274 +105,204 @@ class ExportDialog(QDialog):
         path_layout.addWidget(self.browse_btn)
         settings_layout.addRow("Save to:", path_layout)
 
-        # Options
-        self.include_metadata_cb = QCheckBox("Include metadata")
+        self.include_metadata_cb = QCheckBox("Include all match metadata")
         self.include_metadata_cb.setChecked(True)
         settings_layout.addRow(self.include_metadata_cb)
 
         self.timestamp_format_edit = QLineEdit()
-        self.timestamp_format_edit.setText("%Y-%m-%d %H:%M:%S")
+        self.timestamp_format_edit.setText("%Y-%m-%d %H:%M:%S %Z")  # Include timezone
+        self.timestamp_format_edit.setToolTip("Python strftime format for timestamps")
         settings_layout.addRow("Timestamp format:", self.timestamp_format_edit)
-
         layout.addWidget(settings_group)
 
-        # Preview
-        preview_group = QGroupBox("Preview")
+        preview_group = QGroupBox("Preview (first 3 matches)")
         preview_layout = QVBoxLayout(preview_group)
-
         self.preview_text = QTextEdit()
-        self.preview_text.setMaximumHeight(120)
+        self.preview_text.setMaximumHeight(100)  # Reduced height
         self.preview_text.setReadOnly(True)
-        self.preview_text.setStyleSheet("font-family: 'Courier New', monospace; font-size: 10px;")
+        self.preview_text.setStyleSheet("font-family: 'Courier New', monospace; font-size: 9pt;")
         preview_layout.addWidget(self.preview_text)
-
         layout.addWidget(preview_group)
 
-        # Progress bar (hidden initially)
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
+        self.progress_bar.setTextVisible(True)
         layout.addWidget(self.progress_bar)
 
-        # Status label
-        self.status_label = QLabel(f"Ready to export {len(self.matches)} matches")
-        self.status_label.setStyleSheet("color: #666; font-style: italic;")
+        self.status_label = QLabel(f"Ready to export {len(self.matches)} matches.")
         layout.addWidget(self.status_label)
 
-        # Buttons
         button_layout = QHBoxLayout()
-
         self.cancel_btn = QPushButton("Cancel")
-        self.export_btn = QPushButton("Export")
-        self.export_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50;
-                color: white;
-                padding: 8px 16px;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
-        """)
-
+        self.export_btn = QPushButton("Export Matches")
+        self.export_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
         button_layout.addStretch()
         button_layout.addWidget(self.cancel_btn)
         button_layout.addWidget(self.export_btn)
-
         layout.addLayout(button_layout)
 
-        # Set default export path
-        default_filename = f"tennis_matches_{self._get_timestamp()}"
-        default_path = Path.home() / "Downloads" / default_filename
-        self.path_edit.setText(str(default_path))
+        self._on_format_changed()  # Set initial path based on default format
 
     def _connect_signals(self):
-        """Connect signals and slots."""
         self.browse_btn.clicked.connect(self._browse_file)
         self.export_btn.clicked.connect(self._start_export)
-        self.cancel_btn.clicked.connect(self.close)
+        self.cancel_btn.clicked.connect(self.reject)  # Use reject for cancel
         self.format_combo.currentTextChanged.connect(self._on_format_changed)
-        self.format_combo.currentTextChanged.connect(self._update_preview)
+        # Update preview on option changes
         self.include_metadata_cb.toggled.connect(self._update_preview)
+        self.timestamp_format_edit.textChanged.connect(self._update_preview)
+
+    def _get_default_filename(self) -> str:
+        """Generates a default filename based on current format and timestamp."""
+        format_name = self.format_combo.currentText().lower()
+        exporter = self.export_manager.get_exporter(format_name)
+        extension = exporter.get_default_extension() if exporter else f".{format_name}"
+
+        from datetime import datetime  # Local import
+        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return f"tennis_matches_{timestamp_str}{extension}"
 
     def _browse_file(self):
-        """Browse for export file location."""
         format_name = self.format_combo.currentText().lower()
+        exporter = self.export_manager.get_exporter(format_name)
 
-        filters = {
-            'csv': "CSV Files (*.csv)",
-            'json': "JSON Files (*.json)",
-            'excel': "Excel Files (*.xlsx)"
-        }
+        default_file = self.path_edit.text() or str(Path.home() / "Downloads" / self._get_default_filename())
 
-        file_filter = filters.get(format_name, "All Files (*.*)")
+        if exporter:
+            extension = exporter.get_default_extension().lstrip('.')
+            file_filter = f"{format_name.upper()} Files (*.{extension});;All Files (*)"
+        else:
+            file_filter = "All Files (*)"
 
         filename, _ = QFileDialog.getSaveFileName(
-            self, "Export Tennis Matches",
-            self.path_edit.text(),
-            file_filter
+            self, "Save Exported Matches", default_file, file_filter
         )
-
         if filename:
             self.path_edit.setText(filename)
 
     def _on_format_changed(self):
-        """Handle format change."""
+        """Update file extension in path_edit when format changes."""
+        current_path_str = self.path_edit.text()
         format_name = self.format_combo.currentText().lower()
-        current_path = Path(self.path_edit.text())
+        exporter = self.export_manager.get_exporter(format_name)
 
-        # Update file extension
-        extensions = {'csv': '.csv', 'json': '.json', 'excel': '.xlsx'}
-        new_extension = extensions.get(format_name, '.txt')
+        if not exporter: return
 
-        new_path = current_path.with_suffix(new_extension)
-        self.path_edit.setText(str(new_path))
+        new_extension = exporter.get_default_extension()
 
-    def _populate_preview(self):
-        """Populate the preview with sample data."""
-        if not self.matches:
-            self.preview_text.setPlainText("No matches to preview")
-            return
+        if current_path_str:
+            p = Path(current_path_str)
+            # If path is a directory, append default filename, else change suffix
+            if p.is_dir() or not p.suffix:
+                base_name = self._get_default_filename().rsplit('.', 1)[0]  # name without extension
+                new_path = p / f"{base_name}{new_extension}"
+            else:
+                new_path = p.with_suffix(new_extension)
+            self.path_edit.setText(str(new_path))
+        else:
+            # Set a default path if empty
+            default_dir = Path.home() / "Downloads"
+            self.path_edit.setText(str(default_dir / self._get_default_filename()))
 
         self._update_preview()
 
     def _update_preview(self):
-        """Update preview based on current settings."""
         if not self.matches:
+            self.preview_text.setPlainText("No matches to preview.")
             return
 
         format_name = self.format_combo.currentText().lower()
-        include_metadata = self.include_metadata_cb.isChecked()
-
-        # Show preview of first few matches
+        # Preview first 3 matches
         preview_matches = self.matches[:3]
 
-        if format_name == 'csv':
-            preview = self._generate_csv_preview(preview_matches, include_metadata)
-        elif format_name == 'json':
-            preview = self._generate_json_preview(preview_matches, include_metadata)
-        else:  # excel
-            preview = self._generate_csv_preview(preview_matches, include_metadata)
-            preview = "Excel format preview:\n" + preview
+        # For simplicity, JSON preview will always be a list of match dicts
+        # CSV preview will be a few lines
+        preview_content = f"--- Preview for {format_name.upper()} format ---\n"
+        if format_name == 'json':
+            import json  # Local import
+            preview_data = [m.to_dict() for m in preview_matches]
+            preview_content += json.dumps(preview_data, indent=2, default=str)[:500]  # Limit length
+        elif format_name == 'csv' or format_name == 'excel' or format_name == 'xlsx':
+            # Simplified CSV-like preview
+            headers = list(preview_matches[0].to_dict().keys()) if preview_matches else []
+            # Select a few key headers for brevity
+            display_headers = ['match_id', 'home_player_name', 'away_player_name', 'status', 'tournament']
+            actual_headers = [h for h in display_headers if h in headers]
+            preview_content += ",".join(actual_headers) + "\n"
+            for match in preview_matches:
+                match_dict = match.to_dict()
+                row_values = [str(match_dict.get(h, '')) for h in actual_headers]
+                preview_content += ",".join(row_values) + "\n"
+        else:
+            preview_content += "Preview not available for this format."
 
-        if len(self.matches) > 3:
-            preview += f"\n... and {len(self.matches) - 3} more matches"
-
-        self.preview_text.setPlainText(preview)
-
-    def _generate_csv_preview(self, matches: List[TennisMatch], include_metadata: bool) -> str:
-        """Generate CSV preview."""
-        lines = []
-
-        # Headers
-        headers = ['Home Player', 'Away Player', 'Score', 'Status', 'Tournament', 'Round', 'Source', 'Updated']
-        if include_metadata:
-            headers.extend(['Tournament Level', 'Surface', 'URL'])
-
-        lines.append(','.join(headers))
-
-        # Data rows
-        for match in matches:
-            row = [
-                match.home_player.name,
-                match.away_player.name,
-                match.display_score,
-                match.status.display_name,
-                match.tournament,
-                match.round_info,
-                match.source,
-                match.last_updated.strftime('%Y-%m-%d %H:%M:%S')
-            ]
-
-            if include_metadata:
-                row.extend([
-                    match.tournament_level.value,
-                    match.surface.value,
-                    match.source_url
-                ])
-
-            lines.append(','.join(f'"{item}"' for item in row))
-
-        return '\n'.join(lines)
-
-    def _generate_json_preview(self, matches: List[TennisMatch], include_metadata: bool) -> str:
-        """Generate JSON preview."""
-        import json
-
-        data = []
-        for match in matches:
-            match_data = {
-                'home_player': match.home_player.name,
-                'away_player': match.away_player.name,
-                'score': match.display_score,
-                'status': match.status.display_name,
-                'tournament': match.tournament,
-                'round': match.round_info,
-                'source': match.source,
-                'updated': match.last_updated.isoformat()
-            }
-
-            if include_metadata:
-                match_data.update({
-                    'tournament_level': match.tournament_level.value,
-                    'surface': match.surface.value,
-                    'url': match.source_url
-                })
-
-            data.append(match_data)
-
-        return json.dumps(data, indent=2)
+        self.preview_text.setPlainText(preview_content.strip())
 
     def _start_export(self):
-        """Start the export process."""
-        output_path = self.path_edit.text().strip()
-        if not output_path:
-            QMessageBox.warning(self, "Export Error", "Please select an output file")
+        output_path_str = self.path_edit.text().strip()
+        if not output_path_str:
+            QMessageBox.warning(self, "Export Error", "Please select an output file path.")
             return
 
-        format_name = self.format_combo.currentText().lower()
+        output_path = Path(output_path_str)
+        if output_path.is_dir():
+            QMessageBox.warning(self, "Export Error", "Output path is a directory. Please specify a file name.")
+            return
+        if not output_path.parent.exists():
+            try:
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                QMessageBox.critical(self, "Export Error", f"Failed to create directory {output_path.parent}: {e}")
+                return
 
-        # Prepare export options
+        format_name = self.format_combo.currentText().lower()
         options = {
             'include_metadata': self.include_metadata_cb.isChecked(),
             'timestamp_format': self.timestamp_format_edit.text()
         }
 
-        # Disable UI during export
         self.export_btn.setEnabled(False)
         self.export_btn.setText("Exporting...")
         self.progress_bar.setVisible(True)
-        self.status_label.setText("Exporting matches...")
+        self.progress_bar.setValue(0)
+        self.status_label.setText(f"Exporting {len(self.matches)} matches as {format_name.upper()}...")
 
-        # Start export worker
-        self.export_worker = ExportWorker(self.matches, output_path, format_name, options)
+        self.export_worker = ExportWorker(self.matches, str(output_path), format_name, options)
         self.export_worker.progress_updated.connect(self.progress_bar.setValue)
         self.export_worker.export_completed.connect(self._on_export_complete)
         self.export_worker.export_failed.connect(self._on_export_failed)
         self.export_worker.start()
 
     def _on_export_complete(self, file_path: str):
-        """Handle successful export."""
-        self.progress_bar.setVisible(False)
+        self.progress_bar.setValue(100)  # Ensure it hits 100
         self.status_label.setText("Export completed successfully!")
-
         QMessageBox.information(
             self, "Export Complete",
             f"Matches exported successfully!\n\nFile saved to:\n{file_path}"
         )
-
-        self.close()
+        self.accept()  # Close dialog on success
 
     def _on_export_failed(self, error: str):
-        """Handle export failure."""
         self.progress_bar.setVisible(False)
         self.export_btn.setEnabled(True)
-        self.export_btn.setText("Export")
-        self.status_label.setText("Export failed")
-
+        self.export_btn.setText("Export Matches")
+        self.status_label.setText(f"Export failed: {error[:100]}")  # Show part of error
         QMessageBox.critical(
-            self, "Export Error",
-            f"Failed to export matches:\n\n{error}"
+            self, "Export Error", f"Failed to export matches:\n\n{error}"
         )
 
-    def _get_timestamp(self) -> str:
-        """Get timestamp string for filename."""
-        from datetime import datetime
-        return datetime.now().strftime("%Y%m%d_%H%M%S")
-
     def closeEvent(self, event):
-        """Handle dialog close."""
         if self.export_worker and self.export_worker.isRunning():
             reply = QMessageBox.question(
                 self, "Export in Progress",
-                "Export is still in progress. Do you want to cancel it?",
-                QMessageBox.Yes | QMessageBox.No
+                "Export is still in progress. Are you sure you want to cancel?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
             )
-
-            if reply == QMessageBox.Yes:
-                self.export_worker.terminate()
-                self.export_worker.wait()
+            if reply == QMessageBox.StandardButton.Yes:
+                self.export_worker.terminate()  # Attempt to stop
+                self.export_worker.wait(1000)  # Wait a bit
+                self.logger.info("Export cancelled by user.")
                 event.accept()
             else:
                 event.ignore()

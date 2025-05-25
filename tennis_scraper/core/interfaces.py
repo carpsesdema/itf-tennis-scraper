@@ -1,8 +1,10 @@
 """Abstract interfaces for the tennis scraper system."""
 
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any
-from .models import TennisMatch
+from typing import List, Dict, Any, Optional
+
+# Forward reference for ScrapingResult if needed, or import directly
+from .models import TennisMatch, ScrapingResult
 
 
 class MatchScraper(ABC):
@@ -10,6 +12,11 @@ class MatchScraper(ABC):
 
     def __init__(self, config: Dict[str, Any]):
         self.config = config
+        # Ensure logger is available for all scrapers
+        from ..utils.logging import get_logger
+        self.logger = get_logger(f"{self.__class__.__module__}.{self.__class__.__name__}")
+        self.delay_between_requests = config.get('delay_between_requests', 1)
+
 
     @abstractmethod
     async def get_source_name(self) -> str:
@@ -17,8 +24,8 @@ class MatchScraper(ABC):
         pass
 
     @abstractmethod
-    async def scrape_matches(self) -> List[TennisMatch]:
-        """Scrape matches from this source."""
+    async def scrape_matches(self) -> ScrapingResult: # Changed to ScrapingResult
+        """Scrape matches from this source and return a ScrapingResult."""
         pass
 
     @abstractmethod
@@ -49,11 +56,63 @@ class DataExporter(ABC):
     """Abstract base class for data exporters."""
 
     @abstractmethod
-    async def export_matches(self, matches: List[TennisMatch], output_path: str) -> bool:
+    async def export_matches(self, matches: List[TennisMatch], output_path: str, **kwargs) -> bool:
         """Export matches to specified format and location."""
         pass
 
     @abstractmethod
     def get_supported_formats(self) -> List[str]:
         """Return list of supported export formats."""
+        pass
+
+    @abstractmethod
+    def get_default_extension(self) -> str:
+        """Return the default file extension for this exporter."""
+        pass
+
+
+class UpdateChecker(ABC):
+    """Abstract base class for update checkers."""
+
+    @abstractmethod
+    async def check_for_updates(self) -> Optional[Any]: # Return type can be an UpdateInfo object
+        """Check for updates."""
+        pass
+
+    @abstractmethod
+    async def download_update(self, update_info: Any, progress_callback=None) -> Optional[str]:
+        """Download an update."""
+        pass
+
+
+class EventEmitter(ABC):
+    """Abstract base class for event emitters."""
+
+    @abstractmethod
+    def on(self, event_name: str, callback: callable):
+        """Register an event listener."""
+        pass
+
+    @abstractmethod
+    def emit(self, event_name: str, *args, **kwargs):
+        """Emit an event."""
+        pass
+
+
+class Plugin(ABC):
+    """Abstract base class for plugins."""
+
+    @abstractmethod
+    def load(self):
+        """Load the plugin."""
+        pass
+
+    @abstractmethod
+    def unload(self):
+        """Unload the plugin."""
+        pass
+
+    @abstractmethod
+    def get_name(self) -> str:
+        """Get plugin name."""
         pass

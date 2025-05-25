@@ -5,11 +5,14 @@ SofaScore scraper implementation for ITF tennis matches.
 import asyncio
 import json
 from typing import List, Optional, Dict, Any
-from datetime import datetime
-import aiohttp
+from datetime import datetime, timezone  # Ensure timezone awareness
+import aiohttp  # Keep for direct use if BaseScraper session is not suitable for all cases
 
-from .base import BaseScraper
-from ..core.models import TennisMatch, ScrapingResult, MatchStatus, TournamentLevel
+from .base import BaseScraper  # Inherit from BaseScraper
+from ..core.models import TennisMatch, Player, Score, ScrapingResult, MatchStatus, TournamentLevel, Surface
+
+
+# Logger is inherited from BaseScraper
 
 
 class SofascoreScraper(BaseScraper):
@@ -19,16 +22,26 @@ class SofascoreScraper(BaseScraper):
     API_BASE = "https://api.sofascore.com/api/v1"
 
     # Tournament IDs for ITF categories
+    # These might need updating or a more dynamic discovery method
     ITF_TOURNAMENT_IDS = {
         "men": [
-            23776,  # ITF Men
-            23777,  # ITF Men M15
-            23778,  # ITF Men M25
+            # Common ITF Men categories, adjust as needed
+            # UniqueTournament IDs can be found by inspecting network requests on Sofascore
+            # when browsing ITF Men sections.
+            # Example:
+            # 23776,  # ITF Men (general or a specific series)
+            # For specific M15, M25, you might need to find their uniqueTournament IDs.
+            # These IDs can change, so a robust solution might involve discovering them.
+            # Let's assume a few placeholder IDs for now if specific ones are not readily available.
+            # These are illustrative. You'll need to find current, valid IDs.
+            17655,  # Placeholder for ITF Men - M15 Example
+            17656,  # Placeholder for ITF Men - M25 Example
         ],
         "women": [
-            23780,  # ITF Women
-            23781,  # ITF Women W15
-            23782,  # ITF Women W25
+            # Example:
+            # 23780,  # ITF Women (general or a specific series)
+            17657,  # Placeholder for ITF Women - W15 Example
+            17658,  # Placeholder for ITF Women - W25 Example
         ]
     }
 
@@ -38,367 +51,219 @@ class SofascoreScraper(BaseScraper):
 
     async def is_available(self) -> bool:
         """Check if SofaScore is currently available."""
-        return await self._check_site_availability(self.BASE_URL)
+        return await self._check_site_availability(self.BASE_URL, timeout=self.request_timeout)
 
     async def scrape_matches(self) -> ScrapingResult:
         """Scrape ITF matches from SofaScore."""
-        start_time = datetime.now()
-        all_matches = []
+        start_time_dt = datetime.now(timezone.utc)
+        all_matches: List[TennisMatch] = []
+        error_message = None
+        success = False
+        api_calls_count = 0
 
         try:
             self.logger.info("Starting SofaScore scraping...")
 
-            # Scrape both men's and women's tournaments
             men_matches = await self._scrape_category("men")
-            women_matches = await self._scrape_category("women")
-
+            api_calls_count += len(self.ITF_TOURNAMENT_IDS.get("men", []))
             all_matches.extend(men_matches)
+
+            await asyncio.sleep(self.delay_between_requests)  # Delay between categories
+
+            women_matches = await self._scrape_category("women")
+            api_calls_count += len(self.ITF_TOURNAMENT_IDS.get("women", []))
             all_matches.extend(women_matches)
 
-            duration = (datetime.now() - start_time).total_seconds()
-
-            return ScrapingResult(
-                matches=all_matches,
-                source=await self.get_source_name(),
-                timestamp=datetime.now(),
-                success=True,
-                metadata={
-                    'men_matches': len(men_matches),
-                    'women_matches': len(women_matches),
-                    'duration_seconds': duration,
-                    'api_calls': len(self.ITF_TOURNAMENT_IDS["men"]) + len(self.ITF_TOURNAMENT_IDS["women"])
-                }
-            )
+            success = True
+            self.logger.info(f"SofaScore scraping completed. Found {len(all_matches)} total matches.")
 
         except Exception as e:
-            self.logger.error(f"SofaScore scraping failed: {e}")
-            duration = (datetime.now() - start_time).total_seconds()
+            self.logger.error(f"SofaScore scraping failed: {e}", exc_info=True)
+            error_message = str(e)
 
-            return ScrapingResult(
-                matches=all_matches,
-                source=await self.get_source_name(),
-                timestamp=datetime.now(),
-                success=False,
-                error_message=str(e),
-                metadata={'duration_seconds': duration}
-            )
+        duration = (datetime.now(timezone.utc) - start_time_dt).total_seconds()
+        return ScrapingResult(
+            source=await self.get_source_name(),
+            matches=all_matches,
+            success=success,
+            error_message=error_message,
+            duration_seconds=duration,
+            timestamp=datetime.now(timezone.utc),
+            metadata={
+                'api_calls': api_calls_count,
+                'men_matches_found': len(men_matches) if 'men_matches' in locals() else 0,
+                'women_matches_found': len(women_matches) if 'women_matches' in locals() else 0,
+            }
+        )
 
     async def _scrape_category(self, category: str) -> List[TennisMatch]:
-        """Scrape matches from a specific category."""
-        matches = []
+        """Scrape matches from a specific category (men/women)."""
+        matches_in_category: List[TennisMatch] = []
         tournament_ids = self.ITF_TOURNAMENT_IDS.get(category, [])
+
+        if not tournament_ids:
+            self.logger.warning(f"No tournament IDs configured for SofaScore category: {category}")
+            return matches_in_category
 
         self.logger.info(f"Scraping SofaScore {category} tournaments: {tournament_ids}")
 
         for tournament_id in tournament_ids:
             try:
-                tournament_matches = await self._scrape_tournament(tournament_id, category)
-                matches.extend(tournament_matches)
+                # API endpoint for events in a tournament for a specific date (today)
+                # Sofascore API might require a date; using today's date.
+                # Or, it might have an endpoint for "live" or "scheduled" events.
+                # This is a common pattern: /unique-tournament/{id}/events/live
+                # Or for a date: /unique-tournament/{id}/events/date/{YYYY-MM-DD}
+                # For simplicity, let's try fetching recent/scheduled events.
+                # The endpoint /last/0 usually gives recent and upcoming.
+                events_url = f"{self.API_BASE}/unique-tournament/{tournament_id}/events/last/0"
 
-                # Add delay between tournament requests
-                await asyncio.sleep(self.delay_between_requests)
+                session = await self._get_session()
+                async with session.get(events_url, timeout=self.request_timeout) as response:
+                    response.raise_for_status()  # Will raise an error for 4xx/5xx responses
+                    data = await response.json()
+                    events = data.get('events', [])
+                    self.logger.debug(f"Fetched {len(events)} events for tournament ID {tournament_id} ({category}).")
 
-            except Exception as e:
-                self.logger.warning(f"Failed to scrape tournament {tournament_id}: {e}")
-
-        self.logger.info(f"Found {len(matches)} matches for {category}")
-        return matches
-
-    async def _scrape_tournament(self, tournament_id: int, category: str) -> List[TennisMatch]:
-        """Scrape matches from a specific tournament."""
-        matches = []
-
-        try:
-            # Get tournament events (current/recent matches)
-            events_url = f"{self.API_BASE}/sport/5/tournament/{tournament_id}/events/last/0"
-
-            session = await self._get_session()
-            async with session.get(events_url) as response:
-                if response.status != 200:
-                    self.logger.warning(f"API returned status {response.status} for tournament {tournament_id}")
-                    return matches
-
-                data = await response.json()
-                events = data.get('events', [])
-
-                self.logger.debug(f"Found {len(events)} events for tournament {tournament_id}")
-
-                for event in events:
-                    try:
-                        match = await self._parse_event_data(event, category, tournament_id)
+                    for event_data in events:
+                        match = self._parse_event_data(event_data, category, tournament_id)
                         if match:
-                            matches.append(match)
-                    except Exception as e:
-                        self.logger.warning(f"Failed to parse event: {e}")
+                            matches_in_category.append(match)
 
-        except Exception as e:
-            self.logger.error(f"Failed to scrape tournament {tournament_id}: {e}")
+                await asyncio.sleep(self.delay_between_requests)  # Delay between individual tournament API calls
 
-        return matches
+            except aiohttp.ClientResponseError as e_http:
+                self.logger.warning(
+                    f"HTTP error scraping SofaScore tournament {tournament_id} ({category}): {e_http.status} {e_http.message}")
+            except asyncio.TimeoutError:
+                self.logger.warning(f"Timeout scraping SofaScore tournament {tournament_id} ({category}).")
+            except Exception as e:
+                self.logger.error(f"Failed to scrape SofaScore tournament {tournament_id} ({category}): {e}",
+                                  exc_info=True)
 
-    async def _parse_event_data(self, event: Dict[str, Any], category: str, tournament_id: int) -> Optional[
-        TennisMatch]:
-        """Parse event data into TennisMatch object."""
+        self.logger.info(f"Found {len(matches_in_category)} matches for SofaScore category: {category}")
+        return matches_in_category
+
+    def _parse_event_data(self, event: Dict[str, Any], category_type: str, tour_id: int) -> Optional[TennisMatch]:
+        """Parse event data from Sofascore API into TennisMatch object."""
         try:
-            # Extract basic match information
             home_team = event.get('homeTeam', {})
             away_team = event.get('awayTeam', {})
 
-            home_player = home_team.get('name', '')
-            away_player = away_team.get('name', '')
+            home_player_name = self._parse_player_name(home_team.get('name', 'N/A'))
+            away_player_name = self._parse_player_name(away_team.get('name', 'N/A'))
 
-            if not home_player or not away_player:
+            if home_player_name == 'N/A' or away_player_name == 'N/A':
+                self.logger.debug(f"Skipping event due to missing player name(s): {event.get('id')}")
                 return None
 
-            # Parse status
-            status_data = event.get('status', {})
-            status_code = status_data.get('code', 0)
-            status_type = status_data.get('type', 'notstarted')
+            status_obj = event.get('status', {})
+            status_code = status_obj.get('code')
+            status_description = status_obj.get('description', '').lower()  # Use description for more context
 
-            match_status = self._parse_status(status_code, status_type)
+            # Infer status more reliably
+            match_status = MatchStatus.UNKNOWN
+            if status_obj.get('type') == 'inprogress':
+                match_status = MatchStatus.LIVE
+            elif status_obj.get('type') == 'finished':
+                match_status = MatchStatus.FINISHED
+            elif status_obj.get('type') == 'notstarted':
+                match_status = MatchStatus.SCHEDULED
+            elif status_description:  # Fallback to description based parsing
+                match_status = self._parse_match_status(status_description)
 
-            # Parse score
-            score_data = event.get('homeScore', {}), event.get('awayScore', {})
-            score_text = self._parse_score(score_data, match_status)
+            home_score_data = event.get('homeScore', {})
+            away_score_data = event.get('awayScore', {})
 
-            # Tournament information
-            tournament_data = event.get('tournament', {})
-            tournament_name = tournament_data.get('name', f'ITF {category.title()}')
+            sets_list = []
+            for i in range(1, 6):  # Max 5 sets
+                p_home = home_score_data.get(f'period{i}')
+                p_away = away_score_data.get(f'period{i}')
+                if p_home is not None and p_away is not None:  # Only add if both scores for set exist
+                    sets_list.append((int(p_home), int(p_away)))
+                else:  # Stop if a set is missing
+                    break
 
-            # Round information
-            round_info = event.get('roundInfo', {}).get('name', '')
+            current_game_score = None
+            if match_status == MatchStatus.LIVE:
+                cg_home = home_score_data.get('current')  # Sofascore sometimes has 'current' for game points
+                cg_away = away_score_data.get('current')
+                if cg_home is not None and cg_away is not None:  # Ensure both exist
+                    current_game_score = (str(cg_home), str(cg_away))
 
-            # Get additional details
-            start_timestamp = event.get('startTimestamp')
-            start_time = None
-            if start_timestamp:
-                start_time = datetime.fromtimestamp(start_timestamp)
+            score_obj = Score(sets=sets_list, current_game=current_game_score)
 
-            # Build match URL
-            event_id = event.get('id', '')
-            match_url = f"{self.BASE_URL}/tennis/match/{event_id}" if event_id else ""
+            tournament_info = event.get('tournament', {})
+            season_info = event.get('season', {})
+            round_info_obj = event.get('roundInfo', {})
 
-            # Create match object
-            match = self._create_match(
-                home_player=home_player,
-                away_player=away_player,
-                score=score_text,
-                status=match_status.value,
+            tournament_name = tournament_info.get('name', f"ITF {category_type.title()}")
+            if season_info.get('name') and season_info.get('name') not in tournament_name:
+                tournament_name += f" {season_info.get('year', '')}"
+
+            round_name = round_info_obj.get('name', round_info_obj.get('round', ''))
+
+            scheduled_ts = event.get('startTimestamp')
+            scheduled_dt = datetime.fromtimestamp(scheduled_ts, timezone.utc) if scheduled_ts else None
+
+            match_id_val = str(event.get('id'))
+            source_url_val = f"{self.BASE_URL}/tennis/match/{match_id_val}" if match_id_val else None
+
+            # Determine tournament level and surface (can be challenging without more specific API fields)
+            tour_level = self._determine_tournament_level_sofascore(
+                tournament_info.get('uniqueTournament', {}).get('name', tournament_name))
+            # Surface info might be in uniqueTournament or tournament details, needs inspection
+            surface_name = tournament_info.get('groundType', '').capitalize()
+            surface_val = Surface.UNKNOWN
+            if surface_name:
+                try:
+                    surface_val = Surface(surface_name)
+                except ValueError:
+                    if "hard" in surface_name.lower():
+                        surface_val = Surface.HARD
+                    elif "clay" in surface_name.lower():
+                        surface_val = Surface.CLAY
+                    elif "grass" in surface_name.lower():
+                        surface_val = Surface.GRASS
+
+            return TennisMatch(
+                home_player=Player(name=home_player_name, player_id=str(home_team.get('id'))),
+                away_player=Player(name=away_player_name, player_id=str(away_team.get('id'))),
+                score=score_obj,
+                status=match_status,
                 tournament=tournament_name,
-                round_info=round_info,
-                url=match_url,
-                match_id=str(event_id),
-                sofascore_tournament_id=tournament_id,
-                category=category,
-                start_timestamp=start_timestamp
+                tournament_level=tour_level,
+                surface=surface_val,
+                round_info=round_name,
+                scheduled_time=scheduled_dt,
+                source=asyncio.run(self.get_source_name()),  # Not ideal, set explicitly
+                source_url=source_url_val,
+                match_id=match_id_val,
+                last_updated=datetime.now(timezone.utc),
+                metadata={
+                    'sofascore_event_id': event.get('id'),
+                    'sofascore_tournament_id': tournament_info.get('tournament', {}).get('id', tour_id),
+                    'sofascore_category_id': tournament_info.get('category', {}).get('id'),
+                    'has_live_odds': event.get('hasOdds', False)  # Example metadata
+                }
             )
-
-            # Set scheduled time if available
-            if start_time:
-                match.scheduled_time = start_time
-
-            # Determine tournament level
-            match.tournament_level = self._determine_tournament_level(tournament_name)
-
-            return match
-
         except Exception as e:
-            self.logger.warning(f"Failed to parse event data: {e}")
+            self.logger.warning(f"Error parsing SofaScore event data (ID: {event.get('id')}): {e}", exc_info=True)
             return None
 
-    def _parse_status(self, status_code: int, status_type: str) -> MatchStatus:
-        """Parse SofaScore status into MatchStatus enum."""
-        # SofaScore status codes mapping
-        if status_type == 'inprogress':
-            return MatchStatus.LIVE
-        elif status_type == 'finished':
-            return MatchStatus.FINISHED
-        elif status_type == 'notstarted':
-            return MatchStatus.SCHEDULED
-        elif status_type == 'postponed':
-            return MatchStatus.POSTPONED
-        elif status_type == 'cancelled':
-            return MatchStatus.CANCELLED
-        elif status_type == 'walkover':
-            return MatchStatus.WALKOVER
-        else:
-            # Default based on status code
-            if status_code in [6, 7, 8, 9, 10, 11, 12, 31, 32]:  # In progress codes
-                return MatchStatus.LIVE
-            elif status_code in [3, 4, 5]:  # Finished codes
-                return MatchStatus.FINISHED
-            elif status_code == 1:  # Not started
-                return MatchStatus.SCHEDULED
-            else:
-                return MatchStatus.SCHEDULED
-
-    def _parse_score(self, score_data: tuple, status: MatchStatus) -> str:
-        """Parse score data into readable format."""
-        try:
-            home_score, away_score = score_data
-
-            if not home_score or not away_score:
-                return ""
-
-            # Get sets data
-            home_periods = home_score.get('period1', 0), home_score.get('period2', 0), home_score.get('period3', 0)
-            away_periods = away_score.get('period1', 0), away_score.get('period2', 0), away_score.get('period3', 0)
-
-            # Build score string
-            score_parts = []
-            for i, (home_set, away_set) in enumerate(zip(home_periods, away_periods)):
-                if home_set == 0 and away_set == 0:
-                    break
-                score_parts.append(f"{home_set}-{away_set}")
-
-            if score_parts:
-                return " ".join(score_parts)
-
-            # Fall back to display scores if no periods
-            home_display = home_score.get('display', 0)
-            away_display = away_score.get('display', 0)
-
-            if home_display or away_display:
-                return f"{home_display}-{away_display}"
-
-            return ""
-
-        except Exception as e:
-            self.logger.warning(f"Failed to parse score: {e}")
-            return ""
-
-    def _determine_tournament_level(self, tournament_name: str) -> TournamentLevel:
-        """Determine tournament level from name."""
-        name_lower = tournament_name.lower()
-
-        if 'itf' in name_lower:
-            if 'm15' in name_lower or 'w15' in name_lower or '15k' in name_lower:
-                return TournamentLevel.ITF_15K
-            elif 'm25' in name_lower or 'w25' in name_lower or '25k' in name_lower:
-                return TournamentLevel.ITF_25K
-            elif 'm40' in name_lower or 'w40' in name_lower or '40k' in name_lower:
-                return TournamentLevel.ITF_40K
-            elif 'm60' in name_lower or 'w60' in name_lower or '60k' in name_lower:
-                return TournamentLevel.ITF_60K
-            elif 'm80' in name_lower or 'w80' in name_lower or '80k' in name_lower:
-                return TournamentLevel.ITF_80K
-            elif 'm100' in name_lower or 'w100' in name_lower or '100k' in name_lower:
-                return TournamentLevel.ITF_100K
-            else:
-                return TournamentLevel.ITF_25K  # Default ITF level
-
-        elif 'challenger' in name_lower:
-            return TournamentLevel.CHALLENGER
-        elif 'atp' in name_lower:
-            if '250' in name_lower:
-                return TournamentLevel.ATP_250
-            elif '500' in name_lower:
-                return TournamentLevel.ATP_500
-            elif '1000' in name_lower or 'masters' in name_lower:
-                return TournamentLevel.ATP_1000
-            else:
-                return TournamentLevel.ATP_250
-        elif any(
-                gs in name_lower for gs in ['wimbledon', 'roland garros', 'french open', 'us open', 'australian open']):
-            return TournamentLevel.GRAND_SLAM
-
+    def _determine_tournament_level_sofascore(self, name: str) -> TournamentLevel:
+        """Enhanced tournament level detection for Sofascore names."""
+        name_lower = name.lower()
+        if "itf" in name_lower:
+            if any(s in name_lower for s in ["m15", "w15", "15k"]): return TournamentLevel.ITF_15K
+            if any(s in name_lower for s in ["m25", "w25", "25k"]): return TournamentLevel.ITF_25K
+            # Add other ITF levels like 40k, 60k, 80k, 100k if distinguishable
+            return TournamentLevel.ITF_25K  # Default for ITF
+        if "challenger" in name_lower: return TournamentLevel.CHALLENGER
+        # Add ATP/WTA/Grand Slam detection if you expand scope
         return TournamentLevel.UNKNOWN
 
-    async def get_live_scores(self, match_id: str) -> Optional[Dict[str, Any]]:
-        """Get detailed live scores for a specific match."""
-        try:
-            url = f"{self.API_BASE}/event/{match_id}"
-
-            session = await self._get_session()
-            async with session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return data.get('event', {})
-
-        except Exception as e:
-            self.logger.error(f"Failed to get live scores for match {match_id}: {e}")
-
-        return None
-
-    async def get_tournament_info(self, tournament_id: int) -> Optional[Dict[str, Any]]:
-        """Get detailed tournament information."""
-        try:
-            url = f"{self.API_BASE}/tournament/{tournament_id}"
-
-            session = await self._get_session()
-            async with session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return data.get('tournament', {})
-
-        except Exception as e:
-            self.logger.error(f"Failed to get tournament info for {tournament_id}: {e}")
-
-        return None
-
-    async def search_tournaments(self, query: str) -> List[Dict[str, Any]]:
-        """Search for tournaments by name."""
-        try:
-            url = f"{self.API_BASE}/search/tournaments"
-            params = {'q': query, 'sport': 5}  # Sport 5 = Tennis
-
-            session = await self._get_session()
-            async with session.get(url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return data.get('results', [])
-
-        except Exception as e:
-            self.logger.error(f"Failed to search tournaments: {e}")
-
-        return []
-
-    def get_supported_tournament_categories(self) -> List[str]:
-        """Get list of supported tournament categories."""
-        return list(self.ITF_TOURNAMENT_IDS.keys())
-
-    def add_tournament_id(self, category: str, tournament_id: int):
-        """Add a new tournament ID to scrape."""
-        if category in self.ITF_TOURNAMENT_IDS:
-            if tournament_id not in self.ITF_TOURNAMENT_IDS[category]:
-                self.ITF_TOURNAMENT_IDS[category].append(tournament_id)
-                self.logger.info(f"Added tournament {tournament_id} to {category} category")
-
-    def remove_tournament_id(self, category: str, tournament_id: int):
-        """Remove a tournament ID from scraping."""
-        if category in self.ITF_TOURNAMENT_IDS:
-            if tournament_id in self.ITF_TOURNAMENT_IDS[category]:
-                self.ITF_TOURNAMENT_IDS[category].remove(tournament_id)
-                self.logger.info(f"Removed tournament {tournament_id} from {category} category")
-
-    async def get_player_info(self, player_id: str) -> Optional[Dict[str, Any]]:
-        """Get detailed player information."""
-        try:
-            url = f"{self.API_BASE}/player/{player_id}"
-
-            session = await self._get_session()
-            async with session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return data.get('player', {})
-
-        except Exception as e:
-            self.logger.error(f"Failed to get player info for {player_id}: {e}")
-
-        return None
-
-    async def get_head_to_head(self, player1_id: str, player2_id: str) -> Optional[Dict[str, Any]]:
-        """Get head-to-head statistics between two players."""
-        try:
-            url = f"{self.API_BASE}/player/{player1_id}/h2h/{player2_id}"
-
-            session = await self._get_session()
-            async with session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return data
-
-        except Exception as e:
-            self.logger.error(f"Failed to get H2H for {player1_id} vs {player2_id}: {e}")
-
-        return None
+    async def cleanup(self):
+        """Cleanup resources for SofascoreScraper."""
+        self.logger.info("Cleaning up SofascoreScraper resources...")
+        await super().cleanup()  # Important to call BaseScraper's cleanup for the session
