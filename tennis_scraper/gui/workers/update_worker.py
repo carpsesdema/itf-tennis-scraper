@@ -2,6 +2,7 @@
 UpdateWorker for checking and downloading application updates in a separate thread.
 """
 import asyncio
+from typing import Optional
 from PySide6.QtCore import QThread, Signal
 
 from ...updates.checker import GitHubUpdateChecker, UpdateInfo  # Adjusted import

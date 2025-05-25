@@ -236,7 +236,7 @@ class SofascoreScraper(BaseScraper):
                 surface=surface_val,
                 round_info=round_name,
                 scheduled_time=scheduled_dt,
-                source=asyncio.run(self.get_source_name()),  # Not ideal, set explicitly
+                source="sofascore",  # Not ideal, set explicitly
                 source_url=source_url_val,
                 match_id=match_id_val,
                 last_updated=datetime.now(timezone.utc),

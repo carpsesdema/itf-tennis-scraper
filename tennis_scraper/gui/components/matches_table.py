@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt, QSettings
 from PySide6.QtGui import QColor
 
 from typing import List, Optional
-from datetime import timezone  # For consistent timezone handling
+from datetime import datetime, timezone  # For consistent timezone handling
 
 from ...core.models import TennisMatch, MatchStatus  # Adjusted import path
 from ...utils.logging import get_logger

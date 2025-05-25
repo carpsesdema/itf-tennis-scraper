@@ -3,11 +3,11 @@ Custom status bar component with enhanced features.
 """
 
 from PySide6.QtWidgets import (
-    QStatusBar, QLabel, QProgressBar, QPushButton, QHBoxLayout, QWidget
+    QStatusBar, QLabel, QProgressBar, QPushButton, QHBoxLayout, QWidget, QSizePolicy
 )
 from PySide6.QtCore import QTimer, Signal, Qt
 from PySide6.QtGui import QFont
-
+from PySide6.QtWidgets import QSizePolicy
 from ...utils.logging import get_logger
 
 
@@ -42,7 +42,7 @@ class CustomStatusBar(QStatusBar):
 
         # Spacer to push right-side widgets to the right
         spacer = QWidget()
-        spacer.setSizePolicy(spacer.sizePolicy().Expanding, spacer.sizePolicy().Preferred)
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.addWidget(spacer)
 
         # Live matches indicator

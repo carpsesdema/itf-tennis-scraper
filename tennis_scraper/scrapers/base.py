@@ -141,7 +141,7 @@ class BaseScraper(MatchScraper):
             tournament=tournament.strip(),
             round_info=round_info.strip(),
             scheduled_time=scheduled_time_utc,
-            source=asyncio.run(self.get_source_name()), # This is tricky in a non-async helper
+            source="",  # Will be set by caller # This is tricky in a non-async helper
                                                         # Better to set source explicitly when calling
             source_url=source_url,
             match_id=match_id,

@@ -2,7 +2,7 @@ import csv
 import json
 # import pandas as pd # Import pandas if ExcelExporter is re-enabled and uses it
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Optional
 from datetime import datetime, timezone
 
 from ..core.interfaces import DataExporter
