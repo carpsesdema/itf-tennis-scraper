@@ -11,7 +11,7 @@ import sys
 import logging
 from pathlib import Path
 
-CURRENT_VERSION = "1.0.3"  # <-- Add this line
+CURRENT_VERSION = "1.0.2"
 
 
 
