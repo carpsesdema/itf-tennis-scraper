@@ -44,9 +44,9 @@ class TennisScraperBuilder:
 
         # Application details
         self.app_name = "ITFTennisScraperPro"
-        self.main_script = "tennis_scraper.py"
+        self.main_script = "main.py"
 
-        print(f"🎾 ITF Tennis Scraper Builder (DEBUG MODE)")
+        print(f"🎾 Tennis Scraper Builder (DEBUG MODE)")
         print(f"📁 Project root: {self.project_root}")
         print(f"📦 Target repo: {self.github_repo}")
         print(f"🔑 GitHub token: {'✅ SET' if self.github_token else '❌ NOT SET'}")
