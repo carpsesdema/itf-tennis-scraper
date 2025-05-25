@@ -6,7 +6,7 @@ import json
 import logging
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List # Added List
 
 from .utils.logging import get_logger
 
@@ -24,6 +24,18 @@ class ScrapingConfig:
         'sofascore': True,
         'itf_official': False
     })
+    flashscore_bet365_indicator_fragment: str = "/549/"
+    # --- ADDED FOR MATCH TIE BREAK SCENARIO ---
+    flashscore_match_tie_break_keywords: List[str] = field(
+        default_factory=lambda: [
+            "match tie break",
+            "match tie-break",
+            "match tb",
+            "super tiebreak", # Common alternative term
+            "mtb" # Common abbreviation
+        ]
+    )
+    # --- END ADDED ---
 
 
 @dataclass
@@ -144,7 +156,7 @@ class Config:
         if 'updates' in data:
             self._update_dataclass(self.updates, data['updates'])
             # Update derived URL if repo changed
-            if not data['updates'].get('update_url'):
+            if not data['updates'].get('update_url'): # type: ignore
                 self.updates.update_url = f"https://api.github.com/repos/{self.updates.github_repo}/releases/latest"
 
         if 'logging' in data:
@@ -194,6 +206,7 @@ class Config:
 
     def get_scraper_config(self, scraper_name: str) -> Dict[str, Any]:
         """Get configuration for a specific scraper."""
+        # Base configuration common to all scrapers (or parts of scraping process)
         base_config = {
             'delay_between_requests': self.scraping.delay_between_requests,
             'request_timeout': self.scraping.request_timeout,
@@ -202,6 +215,13 @@ class Config:
             'user_agent': self.scraping.user_agent,
             'enabled': self.scraping.sources_enabled.get(scraper_name, False)
         }
+        # Add scraper-specific configurations
+        if scraper_name == 'flashscore':
+            base_config['flashscore_bet365_indicator_fragment'] = self.scraping.flashscore_bet365_indicator_fragment
+            base_config['flashscore_match_tie_break_keywords'] = self.scraping.flashscore_match_tie_break_keywords
+        # Add other scraper specific configs here if needed in the future
+        # elif scraper_name == 'sofascore':
+        #     base_config['sofascore_api_key'] = self.scraping.sofascore_api_key # Example
 
         return base_config
 

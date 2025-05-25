@@ -10,7 +10,7 @@ beautifulsoup4
 selenium
 lxml
 aiohttp
-
+playwright
 # Data Processing
 pandas
 

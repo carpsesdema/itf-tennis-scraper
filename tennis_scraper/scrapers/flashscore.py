@@ -1,246 +1,295 @@
-"""Flashscore scraper implementation."""
+"""Flashscore scraper implementation using Playwright."""
 
-import asyncio
-import time  # Keep for sleeps if needed by Selenium
-from typing import List, Optional, Dict
+import re  # For more flexible text matching
 from datetime import datetime, timezone
+from typing import List, Optional
 
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options as ChromeOptions
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from playwright.async_api import (
+    async_playwright,
+    TimeoutError as PlaywrightTimeoutError,
+    ElementHandle
+)
 
-from .base import BaseScraper  # Inherit from BaseScraper
-from ..core.models import TennisMatch, Player, Score, MatchStatus, ScrapingResult, TournamentLevel, Surface
-from ..utils.logging import get_logger
+from .base import BaseScraper
+from ..core.models import TennisMatch, Player, Score, ScrapingResult, TournamentLevel, Surface
 
 
-class FlashscoreScraper(BaseScraper):  # Inherit from BaseScraper
-    """Scraper for Flashscore ITF tennis matches."""
+# Logger is inherited from BaseScraper
 
-    # No need for __init__ if it just calls super and sets logger, BaseScraper handles that.
-    # If you need Flashscore-specific initialization, you can add it.
+
+class FlashscoreScraper(BaseScraper):
+    """Scraper for Flashscore ITF tennis matches using Playwright."""
+
+    FLASHCORE_BASE_URL = "https://www.flashscore.com"
+    ITF_MEN_URL_PATH = "/tennis/itf-men-singles/"
 
     async def get_source_name(self) -> str:
-        """Return the name of this scraping source."""
         return "flashscore"
 
     async def is_available(self) -> bool:
-        """Check if this source is currently available using aiohttp from BaseScraper."""
-        return await self._check_site_availability("https://www.flashscore.com", timeout=self.request_timeout)
+        return await self._check_site_availability(self.FLASHCORE_BASE_URL, timeout=self.request_timeout)
 
-    async def _init_driver(self):
-        """Initialize Chrome driver for Selenium."""
-        # This needs to run in a separate thread or be adapted for asyncio if possible.
-        # For now, keeping it synchronous for simplicity within the async scrape_matches.
-        # Consider using Playwright for better async browser automation if this becomes a bottleneck.
-        loop = asyncio.get_event_loop()
-        if getattr(self, '_driver', None) is None:
-            self.logger.info("Initializing Selenium WebDriver for Flashscore...")
-            options = ChromeOptions()
-            if self.config.get('headless_browser', True):
-                options.add_argument("--headless")
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-            options.add_argument("--disable-gpu")  # Often recommended for headless
-            options.add_argument("--window-size=1920x1080")  # Standard window size
-            options.add_argument(f"--user-agent={self.config.get('user_agent', 'Mozilla/5.0')}")
-            # Disable logging for Selenium itself to keep console clean
-            options.add_experimental_option('excludeSwitches', ['enable-logging'])
-
-            try:
-                # Run WebDriver creation in an executor to avoid blocking the event loop
-                self._driver = await loop.run_in_executor(None, webdriver.Chrome, options)
-                self.logger.info("Selenium WebDriver for Flashscore initialized.")
-            except Exception as e:
-                self.logger.error(f"Failed to initialize Selenium WebDriver: {e}")
-                self._driver = None
-                raise  # Re-raise to be caught by scrape_with_retry
-        return self._driver
-
-    async def scrape_matches(self) -> ScrapingResult:  # Changed to ScrapingResult
-        """Scrape ITF matches from Flashscore."""
+    async def scrape_matches(self) -> ScrapingResult:
         start_time_dt = datetime.now(timezone.utc)
         matches_found: List[TennisMatch] = []
-        driver = None
-        error_message = None
+        processed_elements_count = 0  # To track how many elements were looked at
+        error_message: Optional[str] = None
         success = False
+        source_name = await self.get_source_name()
+
+        bet365_indicator_fragment = self.config.get('flashscore_bet365_indicator_fragment')
+        match_tie_break_keywords = self.config.get('flashscore_match_tie_break_keywords', [])
+        headless_mode = self.config.get('headless_browser', True)
+        user_agent = self.config.get('user_agent',
+                                     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36')
+        initial_load_delay_ms = self.config.get('flashscore_initial_load_delay', 7) * 1000
+        element_timeout_ms = self.config.get('flashscore_element_timeout', 25) * 1000
+
+        playwright = None
+        browser = None
+        context = None
+        page = None
+
+        if not bet365_indicator_fragment:
+            self.logger.warning(
+                "Flashscore: Bet365 indicator fragment is not configured. Cannot filter for Bet365 matches.")
+            # Depending on requirements, you could either return all matches or an error/empty list.
+            # For now, let's assume it should return no matches if the key config is missing.
+            return ScrapingResult(
+                source=source_name, matches=[], success=True,  # Success because scraper ran, but criteria not met
+                error_message="Bet365 indicator fragment not configured.",
+                duration_seconds=(datetime.now(timezone.utc) - start_time_dt).total_seconds(),
+                timestamp=datetime.now(timezone.utc)
+            )
+        self.logger.info(
+            f"Flashscore: Filtering for matches with Bet365 indicator fragment: '{bet365_indicator_fragment}'")
 
         try:
-            driver = await self._init_driver()
-            if not driver:
-                raise ConnectionError("Failed to initialize WebDriver for Flashscore.")
+            self.logger.info(f"Initializing Playwright for Flashscore (Headless: {headless_mode})...")
+            playwright = await async_playwright().start()
+            browser = await playwright.chromium.launch(headless=headless_mode)
+            context = await browser.new_context(
+                user_agent=user_agent,
+                viewport={'width': 1920, 'height': 1080},
+                java_script_enabled=True,
+            )
+            await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            page = await context.new_page()
 
-            self.logger.info("Navigating to Flashscore ITF Men Singles page...")
-            # Running synchronous Selenium calls in an executor
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, driver.get, "https://www.flashscore.com/tennis/itf-men-singles/")
-            # Increased sleep for page load, especially with cookie banners
-            await asyncio.sleep(self.config.get('flashscore_initial_load_delay', 7))
+            full_url = f"{self.FLASHCORE_BASE_URL}{self.ITF_MEN_URL_PATH}"
+            self.logger.info(f"Navigating to Flashscore URL: {full_url}")
+            await page.goto(full_url, wait_until="networkidle", timeout=element_timeout_ms * 2)
 
-            # Handle cookie consent - run in executor
             try:
                 self.logger.debug("Attempting to handle cookie consent...")
-                cookie_btn_locator = (By.ID, "onetrust-accept-btn-handler")
-
-                # WebDriverWait needs to be run in executor
-                def find_and_click_cookie_btn():
-                    wait = WebDriverWait(driver, 10)  # Timeout for cookie button
-                    cookie_btn = wait.until(EC.element_to_be_clickable(cookie_btn_locator))
-                    cookie_btn.click()
+                cookie_button_selector = "#onetrust-accept-btn-handler"
+                cookie_button = page.locator(cookie_button_selector)
+                if await cookie_button.is_visible(timeout=5000):  # Reduced timeout
+                    await cookie_button.click(timeout=3000)
                     self.logger.info("Cookie consent accepted.")
-                    time.sleep(2)  # Give time for overlay to disappear
-
-                await loop.run_in_executor(None, find_and_click_cookie_btn)
-            except TimeoutException:
-                self.logger.info("Cookie consent dialog not found or timed out, proceeding.")
+                    await page.wait_for_timeout(1000)
+                else:
+                    self.logger.info("Cookie consent dialog not visible or timed out.")
             except Exception as e_cookie:
-                self.logger.warning(f"Could not click cookie button: {e_cookie}")
+                self.logger.warning(f"Could not click cookie button (or not found): {e_cookie}")
 
-            # Wait for match elements to be present - run in executor
-            self.logger.debug("Waiting for match elements to load...")
+            self.logger.debug("Attempting to locate match containers...")
+            primary_match_container_selector = "div.sportName.tennis div.event__match[id^='g_3_']"  # Keep as primary attempt
+            fallback_match_container_selector = "div[class*='event__match']"  # The one that worked
 
-            def wait_for_match_elements():
-                match_container_locator = (By.CSS_SELECTOR, "div.sportName.tennis div.event__match")
-                WebDriverWait(driver, self.config.get('flashscore_element_timeout', 20)).until(
-                    EC.presence_of_all_elements_located(match_container_locator)
-                )
-                return driver.find_elements(*match_container_locator)
+            match_elements: List[ElementHandle] = []
+            used_selector = ""
 
-            match_elements = await loop.run_in_executor(None, wait_for_match_elements)
-            self.logger.info(f"Found {len(match_elements)} potential match elements on Flashscore.")
+            try:
+                self.logger.info(f"Trying primary match selector: {primary_match_container_selector}")
+                await page.wait_for_selector(primary_match_container_selector, state="attached",
+                                             timeout=element_timeout_ms / 2)
+                match_elements = await page.query_selector_all(primary_match_container_selector)
+                used_selector = primary_match_container_selector
+                if match_elements: self.logger.info(f"Found {len(match_elements)} matches using primary selector.")
+            except PlaywrightTimeoutError:
+                self.logger.warning(
+                    f"Primary match selector ('{primary_match_container_selector}') timed out or found no elements.")
+                self.logger.info(f"Trying fallback match selector: {fallback_match_container_selector}")
+                try:
+                    await page.wait_for_selector(fallback_match_container_selector, state="attached",
+                                                 timeout=element_timeout_ms / 2)
+                    match_elements = await page.query_selector_all(fallback_match_container_selector)
+                    used_selector = fallback_match_container_selector
+                    if match_elements: self.logger.info(f"Found {len(match_elements)} matches using fallback selector.")
+                except PlaywrightTimeoutError:
+                    self.logger.error(
+                        f"Fallback match selector ('{fallback_match_container_selector}') also timed out or found no elements.")
+                    success = True
+                    error_message = f"No match elements found using primary or fallback selectors."
+                    return ScrapingResult(
+                        source=source_name, matches=[], success=success, error_message=error_message,
+                        duration_seconds=(datetime.now(timezone.utc) - start_time_dt).total_seconds(),
+                        timestamp=datetime.now(timezone.utc)
+                    )
 
             if not match_elements:
-                self.logger.warning("No match elements found on Flashscore page.")
+                self.logger.warning(f"No match elements found on Flashscore page. Used: '{used_selector}'")
 
-            for element_index, element in enumerate(match_elements):
+            processed_elements_count = len(match_elements)
+            self.logger.info(
+                f"Processing {processed_elements_count} potential match elements using selector: '{used_selector}'")
+
+            for element_index, sel_element in enumerate(match_elements):
                 try:
-                    # Run individual element parsing in executor
-                    match_data = await loop.run_in_executor(None, self._extract_match_data_from_element, element)
-                    if match_data:
-                        source_name = await self.get_source_name()  # Get source name
-                        # Use the base class helper to create the match object
-                        match = TennisMatch(
-                            home_player=Player(name=match_data['home_player']),
-                            away_player=Player(name=match_data['away_player']),
-                            score=Score.from_string(match_data['score']),
-                            status=self._parse_match_status(match_data['status'], match_data['score']),
-                            tournament="ITF Men Singles",  # Flashscore page is specific
-                            tournament_level=TournamentLevel.ITF_25K,  # Assuming, might need refinement
-                            surface=Surface.UNKNOWN,  # Flashscore page may not specify surface easily
-                            source=source_name,
-                            source_url=driver.current_url,  # URL of the main page
-                            match_id=match_data.get('id'),  # If an ID can be extracted
-                            scheduled_time=None,  # Flashscore might not show scheduled time easily here
-                            last_updated=datetime.now(timezone.utc),
-                        )
-                        matches_found.append(match)
+                    home_player_name = await self._get_text_from_selectors(sel_element, [".event__participant--home",
+                                                                                         "div[class*='homeParticipantName']"])
+                    away_player_name = await self._get_text_from_selectors(sel_element, [".event__participant--away",
+                                                                                         "div[class*='awayParticipantName']"])
+
+                    if not home_player_name or not away_player_name:
+                        self.logger.debug(
+                            f"Skipping element {element_index} (selector: '{used_selector}') due to missing player names. Home: '{home_player_name}', Away: '{away_player_name}'.")
+                        continue
+
+                    # --- Bet365 Indicator Check FIRST ---
+                    has_bet365_indicator = False
+                    # Ensure bet365_indicator_fragment is not None or empty before checking
+                    if bet365_indicator_fragment:
+                        element_html = await sel_element.inner_html()
+                        if bet365_indicator_fragment in element_html:
+                            has_bet365_indicator = True
+
+                    # --- IF NOT A BET365 MATCH, SKIP IT ---
+                    if not has_bet365_indicator:
+                        self.logger.debug(
+                            f"Skipping match (idx {element_index}): {home_player_name} vs {away_player_name} - No Bet365 indicator.")
+                        continue
+
+                    self.logger.info(
+                        f"Bet365 Indicator FOUND for: {home_player_name} vs {away_player_name}. Proceeding with full parse.")
+
+                    # --- Continue parsing ONLY if it's a Bet365 match ---
+                    home_s = await self._get_text_from_selectors(sel_element,
+                                                                 [".event__score--home", "span[class*='home_score']"])
+                    away_s = await self._get_text_from_selectors(sel_element,
+                                                                 [".event__score--away", "span[class*='away_score']"])
+                    score_str = f"{home_s}-{away_s}" if home_s and away_s else ""
+
+                    status_text = await self._get_text_from_selectors(sel_element,
+                                                                      [".event__stage", ".event__statusText",
+                                                                       ".event__time"],
+                                                                      default="Scheduled")
+
+                    match_id_raw = await sel_element.get_attribute("id")
+                    if not match_id_raw: match_id_raw = await sel_element.get_attribute("data-event-id")
+
+                    if match_id_raw:
+                        id_part_match = re.search(r'([a-zA-Z0-9_-]+)$',
+                                                  match_id_raw)  # Allow underscore and hyphen in ID
+                        id_part = id_part_match.group(1) if id_part_match else match_id_raw
+                        match_id = f"flashscore_{id_part}"
+                    else:
+                        match_id = f"flashscore_idx_{element_index}_{home_player_name[:3]}_{away_player_name[:3]}"
+                        self.logger.warning(
+                            f"Could not find standard ID for match {home_player_name} vs {away_player_name}. Generated: {match_id}")
+
+                    is_match_tie_break = False
+                    if status_text and match_tie_break_keywords:
+                        status_lower = status_text.lower()
+                        for keyword in match_tie_break_keywords:
+                            if keyword.lower() in status_lower:
+                                is_match_tie_break = True
+                                break
+
+                    metadata_dict = {
+                        'flashscore_raw_id': match_id_raw if match_id_raw else f"index_{element_index}",
+                        'has_bet365_indicator': True,  # We know this is true if we reached here
+                        'is_match_tie_break': is_match_tie_break
+                    }
+
+                    tournament_name_assumed = "ITF Men Singles"
+                    tournament_level = self._determine_tournament_level_flashscore(tournament_name_assumed)
+
+                    match_obj = TennisMatch(
+                        home_player=Player(name=self._parse_player_name(home_player_name)),
+                        away_player=Player(name=self._parse_player_name(away_player_name)),
+                        score=Score.from_string(score_str),
+                        status=self._parse_match_status(status_text, score_str),
+                        tournament=tournament_name_assumed,
+                        tournament_level=tournament_level,
+                        surface=Surface.UNKNOWN,
+                        source=source_name,
+                        source_url=page.url,
+                        match_id=match_id,
+                        scheduled_time=None,
+                        last_updated=datetime.now(timezone.utc),
+                        metadata=metadata_dict
+                    )
+                    matches_found.append(match_obj)
+                    self.logger.info(
+                        f"Successfully parsed Bet365 match: {home_player_name} vs {away_player_name} (ID: {match_id})")
+
                 except Exception as e_extract:
-                    self.logger.warning(f"Failed to extract match data for element {element_index}: {e_extract}")
+                    self.logger.warning(
+                        f"Failed to extract data for a Bet365 match element (idx {element_index}, selector: '{used_selector}'): {e_extract}",
+                        exc_info=True)
             success = True
-        except ConnectionError as e_conn:  # Specific for WebDriver init failure
-            self.logger.error(f"Flashscore WebDriver connection error: {e_conn}")
-            error_message = str(e_conn)
-        except TimeoutException as e_timeout:
-            self.logger.error(f"Flashscore scraping timed out: {e_timeout}")
-            error_message = "Page element timed out."
+
+        except PlaywrightTimeoutError as e_timeout:
+            self.logger.error(f"Playwright operation timed out for Flashscore: {e_timeout}")
+            error_message = f"Playwright timeout: {str(e_timeout)}"
         except Exception as e:
-            self.logger.error(f"Error scraping Flashscore: {e}", exc_info=True)
+            self.logger.error(f"Error scraping Flashscore with Playwright: {e}", exc_info=True)
             error_message = str(e)
-        # No finally block for driver.quit() here, cleanup handles it
+        finally:
+            if page:
+                try:
+                    await page.close()
+                except Exception as e_pc:
+                    self.logger.warning(f"Err page close: {e_pc}")
+            if context:
+                try:
+                    await context.close()
+                except Exception as e_cc: self.logger.warning(f"Err context close: {e_cc}")
+            if browser:
+                try:
+                    await browser.close()
+                except Exception as e_bc: self.logger.warning(f"Err browser close: {e_bc}")
+            if playwright:
+                try:
+                    await playwright.stop()
+                except Exception as e_ps:
+                    self.logger.warning(f"Err playwright stop: {e_ps}")
+            self.logger.info("Playwright resources for Flashscore cleaned up.")
 
         duration = (datetime.now(timezone.utc) - start_time_dt).total_seconds()
+        self.logger.info(
+            f"Flashscore scraping finished. Processed {processed_elements_count} elements. Found {len(matches_found)} Bet365 matches. Success: {success}. Duration: {duration:.2f}s. Error: {error_message}")
         return ScrapingResult(
-            source=await self.get_source_name(),
-            matches=matches_found,
-            success=success,
-            error_message=error_message,
-            duration_seconds=duration,
-            timestamp=datetime.now(timezone.utc)
+            source=source_name, matches=matches_found, success=success, error_message=error_message,
+            duration_seconds=duration, timestamp=datetime.now(timezone.utc)
         )
 
-    def _extract_match_data_from_element(self, element) -> Optional[Dict]:
-        """
-        Synchronous helper to extract match data from a single Selenium web element.
-        This will be run in an executor by scrape_matches.
-        """
-        try:
-            home_player_el = element.find_element(By.CSS_SELECTOR, "[class*='event__participant--home']")
-            away_player_el = element.find_element(By.CSS_SELECTOR, "[class*='event__participant--away']")
-            home_player = home_player_el.text.strip()
-            away_player = away_player_el.text.strip()
-
-            if not home_player or not away_player:
-                self.logger.debug("Skipping element due to missing player names.")
-                return None
-
-            # Try to get score; might not exist for scheduled matches
+    async def _get_text_from_selectors(self, parent_element: ElementHandle, selectors: List[str],
+                                       default: str = "") -> str:
+        for selector in selectors:
             try:
-                home_score_el = element.find_element(By.CSS_SELECTOR, "[class*='event__score--home']")
-                away_score_el = element.find_element(By.CSS_SELECTOR, "[class*='event__score--away']")
-                score = f"{home_score_el.text.strip()}-{away_score_el.text.strip()}"
-            except NoSuchElementException:
-                score = ""  # No score yet
+                element = await parent_element.query_selector(selector)
+                if element:
+                    text = await element.text_content()
+                    if text:
+                        return text.strip()
+            except Exception as e:
+                self.logger.debug(f"Selector '{selector}' failed or returned no text: {e}")
+        return default
 
-            # Try to get status
-            try:
-                # Flashscore status is often within a specific stage class element
-                # It could be "Finished", "1st Half", "09:30" (time), etc.
-                status_el = element.find_element(By.CSS_SELECTOR, "[class*='event__stage']")
-                status = status_el.text.strip()
-            except NoSuchElementException:
-                status = "Scheduled"  # Default if no explicit status found
-
-            # Try to get a unique ID for the match from its href
-            match_id = None
-            try:
-                # The match link is usually on an 'a' tag with class 'event__match' or similar within the element
-                # Or sometimes the element itself is the 'a' tag
-                if element.tag_name == 'a':
-                    link_element = element
-                else:
-                    link_element = element.find_element(By.CSS_SELECTOR, "a[href*='/match/']")  # More specific selector
-
-                href = link_element.get_attribute('href')
-                if href and '/match/' in href:
-                    # Example href: https://www.flashscore.com/match/abcdefgh/#match-summary
-                    match_id_part = href.split('/match/')[1].split('/')[0]
-                    if match_id_part:
-                        match_id = f"flashscore_{match_id_part}"
-            except NoSuchElementException:
-                self.logger.debug("Could not find link element for match ID.")
-            except Exception as e_id:
-                self.logger.warning(f"Error extracting match_id from href: {e_id}")
-
-            return {
-                "home_player": home_player,
-                "away_player": away_player,
-                "score": score,
-                "status": status,
-                "id": match_id
-            }
-
-        except NoSuchElementException as e_nse:
-            # This can happen if an element isn't a proper match structure
-            self.logger.debug(f"Could not find expected sub-element, likely not a match row: {e_nse}")
-            return None
-        except Exception as e:
-            self.logger.warning(f"Error extracting data from single Flashscore element: {e}")
-            return None
+    def _determine_tournament_level_flashscore(self, tournament_name: str) -> TournamentLevel:
+        name_lower = tournament_name.lower()
+        if "itf men" in name_lower or "itf women" in name_lower: return TournamentLevel.ITF_25K
+        if any(s in name_lower for s in ["m15", "w15", "15k"]): return TournamentLevel.ITF_15K
+        if any(s in name_lower for s in ["m25", "w25", "25k"]): return TournamentLevel.ITF_25K
+        if any(s in name_lower for s in ["m40", "w40", "40k"]): return TournamentLevel.ITF_40K
+        if any(s in name_lower for s in ["m60", "w60", "60k"]): return TournamentLevel.ITF_60K
+        if any(s in name_lower for s in ["m80", "w80", "80k"]): return TournamentLevel.ITF_80K
+        if any(s in name_lower for s in ["m100", "w100", "100k"]): return TournamentLevel.ITF_100K
+        return TournamentLevel.UNKNOWN
 
     async def cleanup(self):
-        """Cleanup resources: close WebDriver if it exists."""
-        self.logger.info("Cleaning up FlashscoreScraper resources...")
-        if getattr(self, '_driver', None):
-            self.logger.info("Quitting Flashscore WebDriver.")
-            try:
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, self._driver.quit)
-                self.logger.info("Flashscore WebDriver quit successfully.")
-            except Exception as e:
-                self.logger.error(f"Error quitting Flashscore WebDriver: {e}")
-            finally:
-                self._driver = None
-        await super().cleanup()  # Call BaseScraper's cleanup for aiohttp session
+        self.logger.info(f"Running cleanup for {await self.get_source_name()}...")
+        await super().cleanup()
