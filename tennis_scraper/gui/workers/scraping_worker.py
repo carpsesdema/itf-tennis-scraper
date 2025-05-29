@@ -33,8 +33,8 @@ class ScrapingWorker(QThread):
         self._stop_requested = False
 
         # OPTIMIZED settings for slow computers
-        self.refresh_interval = 600  # 10 minutes default (was 5 minutes)
-        self.min_refresh_interval = 300  # Minimum 5 minutes (was 30 seconds)
+        self.refresh_interval = 120  # 2 minutes instead of 10 minutes
+        self.min_refresh_interval = 60  # Minimum 1 minute instead of 5 minutes
         self.last_ui_update = 0  # Throttle UI updates
         self.ui_update_throttle = 10  # Only update UI every 10 seconds max
 

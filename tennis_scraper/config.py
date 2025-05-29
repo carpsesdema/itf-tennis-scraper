@@ -50,7 +50,7 @@ class UIConfig:
     theme: str = "dark"
     window_width: int = 1200
     window_height: int = 800
-    auto_refresh_interval: int = 600  # 10 minutes instead of 5 for slow computers
+    auto_refresh_interval: int = 120  # 2 minutes instead of 10 for slow computers
     show_live_only: bool = True
 
     # NEW: Slow computer UI optimizations
@@ -202,24 +202,40 @@ class Config:
         return str(config_dir / "slow_computer_config.json")
 
     def validate(self) -> bool:
-        """Validate configuration values with slow computer considerations."""
+        """Validate configuration values with slow computer considerations - AUTO-FIX bad values."""
         errors = []
+        fixed_values = []
 
-        # More lenient validation for slow computers
-        if self.scraping.delay_between_requests < 5:  # Minimum 5 seconds for slow computers
-            errors.append("delay_between_requests must be at least 5 seconds for slow computers")
+        # Auto-fix values that are too small for slow computers
+        if self.scraping.delay_between_requests < 5:
+            self.scraping.delay_between_requests = 8
+            fixed_values.append("delay_between_requests auto-fixed to 8 seconds")
 
-        if self.scraping.request_timeout < 30:  # Minimum 30 seconds for slow computers
-            errors.append("request_timeout must be at least 30 seconds for slow computers")
+        if self.scraping.request_timeout < 30:
+            self.scraping.request_timeout = 45
+            fixed_values.append("request_timeout auto-fixed to 45 seconds")
 
-        if self.ui.auto_refresh_interval < 300:  # Minimum 5 minutes for slow computers
-            errors.append("auto_refresh_interval must be at least 300 seconds (5 minutes) for slow computers")
+        if self.ui.auto_refresh_interval < 60:
+            self.ui.auto_refresh_interval = 120
+            fixed_values.append("auto_refresh_interval auto-fixed to 120 seconds (2 minutes)")
 
-        # Log errors
+        # Log auto-fixes
+        for fix in fixed_values:
+            self.logger.info(f"🐌 Slow computer auto-fix: {fix}")
+
+        # Only log actual errors (none for now since we auto-fix)
         for error in errors:
             self.logger.error(f"🐌 Slow computer config validation error: {error}")
 
-        return len(errors) == 0
+        # Always return True since we auto-fix problems
+        if fixed_values:
+            self.logger.info("🐌 Config auto-fixed for slow computer - saving updates...")
+            try:
+                self.save_to_file()
+            except Exception as e:
+                self.logger.warning(f"Could not save auto-fixed config: {e}")
+
+        return True  # Always pass validation after auto-fixing
 
     def get_scraper_config(self, scraper_name: str) -> Dict[str, Any]:
         """Get configuration for a specific scraper with slow computer optimizations."""
@@ -266,7 +282,7 @@ class Config:
         self.scraping.request_timeout = max(60, self.scraping.request_timeout)
         self.scraping.max_retries = 1  # Only 1 retry for very slow computers
 
-        self.ui.auto_refresh_interval = max(900, self.ui.auto_refresh_interval)  # 15 minutes
+        self.ui.auto_refresh_interval = max(300, self.ui.auto_refresh_interval)  # 5 minutes minimum for very slow
         self.ui.throttle_ui_updates = True
         self.ui.ui_update_interval = 15  # Update UI max every 15 seconds
 

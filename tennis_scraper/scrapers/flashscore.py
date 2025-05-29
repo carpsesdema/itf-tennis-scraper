@@ -1,4 +1,4 @@
-"""Flashscore scraper implementation - OPTIMIZED FOR SLOW COMPUTERS with ITF filtering."""
+"""Flashscore scraper implementation - OPTIMIZED FOR SLOW COMPUTERS with CORRECT selectors."""
 
 import asyncio
 import re
@@ -116,7 +116,7 @@ class FlashscoreLiveTabClicker:
 
 
 class FlashscoreScraper(BaseScraper):
-    """OPTIMIZED Flashscore scraper for slow computers with ITF filtering."""
+    """OPTIMIZED Flashscore scraper for slow computers with CORRECT selectors."""
 
     FLASHCORE_BASE_URL = "https://www.flashscoreusa.com"
     TENNIS_URL_PATH = "/tennis/"
@@ -203,19 +203,29 @@ class FlashscoreScraper(BaseScraper):
 
     async def _process_match_fast(self, sel_element: ElementHandle, element_index: int,
                                   bookmaker_id_to_check: str) -> Optional[TennisMatch]:
-        """FAST match processing for slow computers with ITF filtering."""
+        """FAST match processing for slow computers with CORRECT selectors."""
         try:
-            # FIRST: Check if this is an ITF match - SKIP if not
-            tournament_selectors = [".event__tournament", "[class*='tournament']", ".event__title"]
+            # FIRST: Check if this is an ITF match - CORRECT SELECTORS
+            tournament_selectors = [
+                "span.wcl-overline_rOFfd",  # ACTUAL tournament selector from inspection
+                ".wcl-overline_rOFfd",
+                "[class*='wcl-overline']"
+            ]
             tournament_name = await self._get_text_fast(sel_element, tournament_selectors, default="")
 
             # Skip if not ITF
             if not tournament_name or "itf" not in tournament_name.lower():
                 return None
 
-            # Quick player name extraction
-            home_selectors = [".event__participant--home", "[class*='home']"]
-            away_selectors = [".event__participant--away", "[class*='away']"]
+            # Quick player name extraction with CORRECT selectors
+            home_selectors = [
+                ".event__participant--home",  # ACTUAL home player selector
+                ".event__participant.event__participant--home"
+            ]
+            away_selectors = [
+                ".event__participant--away",  # ACTUAL away player selector
+                ".event__participant.event__participant--away"
+            ]
 
             home_player_name = await self._get_text_fast(sel_element, home_selectors)
             away_player_name = await self._get_text_fast(sel_element, away_selectors)
@@ -223,16 +233,26 @@ class FlashscoreScraper(BaseScraper):
             if not home_player_name or not away_player_name:
                 return None
 
-            # Quick score and status
-            score_selectors = [".event__score--home", "[class*='score']:nth-child(1)"]
+            # Quick score and status with CORRECT selectors
+            score_selectors = [
+                ".event__score--home",  # ACTUAL home score selector
+                ".wcl-matchRowScore_jcvjd.event__score--home"
+            ]
             home_score = await self._get_text_fast(sel_element, score_selectors)
 
-            score_selectors = [".event__score--away", "[class*='score']:nth-child(2)"]
+            score_selectors = [
+                ".event__score--away",  # ACTUAL away score selector
+                ".wcl-matchRowScore_jcvjd.event__score--away"
+            ]
             away_score = await self._get_text_fast(sel_element, score_selectors)
 
             score_str = f"{home_score}-{away_score}" if home_score and away_score else ""
 
-            status_selectors = [".event__stage", ".event__time"]
+            status_selectors = [
+                "[data-state]",  # From the score element inspection
+                ".wcl-matchRowScore_jcvjd[data-state]",
+                ".event__stage", ".event__time"
+            ]
             status_text = await self._get_text_fast(sel_element, status_selectors, default="")
 
             # SIMPLIFIED tie-break detection
@@ -306,15 +326,16 @@ class FlashscoreScraper(BaseScraper):
         return TournamentLevel.ITF_25K  # Default for ITF
 
     async def _get_text_fast(self, parent_element: ElementHandle, selectors: List[str], default: str = "") -> str:
-        """FAST text extraction - only try first selector."""
-        try:
-            # Only try first selector to save time
-            element = await parent_element.query_selector(selectors[0])
-            if element:
-                text = await element.text_content()
-                return (text or default).strip()
-        except Exception:
-            pass
+        """FAST text extraction - try ALL selectors for main page."""
+        for selector in selectors:
+            try:
+                element = await parent_element.query_selector(selector)
+                if element:
+                    text = await element.text_content()
+                    if text and text.strip():
+                        return text.strip()
+            except Exception:
+                continue
         return default
 
     async def scrape_matches(self) -> ScrapingResult:
@@ -390,29 +411,36 @@ class FlashscoreScraper(BaseScraper):
             except Exception:
                 self.logger.debug("Cookie handling skipped")
 
-            # Try to click LIVE tab
-            self.logger.info("🎯 Clicking LIVE tab for live matches...")
-            clicker = FlashscoreLiveTabClicker(page, self.logger)
-            await clicker.click_live_tab()
+            # Skip LIVE tab - just get all matches with UPDATED SELECTORS
+            self.logger.info("🎯 Using main page selectors for flashscoreusa.com")
 
-            # Wait for content - shorter wait for slow computers
-            await page.wait_for_timeout(5000)
+            # Wait for content to load
+            await page.wait_for_timeout(8000)
 
-            # Get match elements with limit
-            self.logger.info(f"🔍 Looking for ITF match elements (max {self.MAX_ELEMENTS_TO_CHECK})...")
+            # Get match elements with CORRECT selectors for main page
+            self.logger.info(f"🔍 Looking for match elements on main tennis page...")
 
             match_elements: List[ElementHandle] = []
-            selectors_to_try = ["div[class*='event__match']", "div[class*='event']", "[id*='g_']"]
+            selectors_to_try = [
+                # CORRECT selectors based on inspection
+                "a.eventRowLink",  # Main match container
+                "[class*='eventRowLink']",
+                "div[id*='g_2_']",  # Match IDs we saw
+                "[aria-describedby*='g_2_']"
+            ]
 
             for selector in selectors_to_try:
                 try:
                     elements = await page.query_selector_all(selector)
+                    self.logger.info(f"🔍 Selector '{selector}' found {len(elements)} elements")
                     if elements:
                         # LIMIT elements for slow computers
                         match_elements = elements[:self.MAX_ELEMENTS_TO_CHECK]
-                        self.logger.info(f"📊 Using {len(match_elements)} elements (limited from {len(elements)})")
+                        self.logger.info(
+                            f"📊 Using {len(match_elements)} elements from selector '{selector}' (limited from {len(elements)})")
                         break
-                except Exception:
+                except Exception as e:
+                    self.logger.debug(f"Selector '{selector}' failed: {e}")
                     continue
 
             if not match_elements:
@@ -423,7 +451,33 @@ class FlashscoreScraper(BaseScraper):
                 processed_elements_count = len(match_elements)
                 itf_bet365_matches_found = 0
 
-                # Process elements with STRICT LIMIT and ITF filtering
+                # Process elements with DEBUG to see what's wrong
+                self.logger.info(f"🔍 DEBUG: Processing first 5 elements to see what's wrong...")
+                for element_index, sel_element in enumerate(match_elements[:5]):
+                    try:
+                        # DEBUG: See what's actually in these elements
+                        element_text = await sel_element.text_content()
+                        self.logger.info(
+                            f"🔍 Element {element_index} text: {element_text[:300] if element_text else 'NO TEXT'}")
+
+                        # Check tournament extraction
+                        tournament_selectors = ["span.wcl-overline_rOFfd", ".wcl-overline_rOFfd",
+                                                "[class*='wcl-overline']"]
+                        tournament_name = await self._get_text_fast(sel_element, tournament_selectors, default="")
+                        self.logger.info(f"🔍 Element {element_index} tournament: '{tournament_name}'")
+
+                        # Check bet365 detection
+                        bet_wrappers = await sel_element.query_selector_all("div.liveBetWrapper")
+                        self.logger.info(f"🔍 Element {element_index} has {len(bet_wrappers)} liveBetWrapper elements")
+
+                        for wrapper in bet_wrappers:
+                            bookmaker_id = await wrapper.get_attribute("data-bookmaker-id")
+                            self.logger.info(f"🔍   Bookmaker ID: {bookmaker_id}")
+
+                    except Exception as e:
+                        self.logger.error(f"Debug element {element_index} error: {e}")
+
+                # ACTUAL processing starts here
                 for element_index, sel_element in enumerate(match_elements):
                     # STOP if we hit our match limit
                     if itf_bet365_matches_found >= self.MAX_MATCHES_TO_PROCESS:
@@ -431,14 +485,21 @@ class FlashscoreScraper(BaseScraper):
                         break
 
                     try:
-                        # Quick bet365 check
+                        # CORRECT bet365 check using liveBetWrapper
                         has_bet365 = False
                         try:
+                            # Look for liveBetWrapper with correct bookmaker ID
+                            bet_wrappers = await sel_element.query_selector_all("div.liveBetWrapper")
+                            for wrapper in bet_wrappers:
+                                bookmaker_id = await wrapper.get_attribute("data-bookmaker-id")
+                                if bookmaker_id == bookmaker_id_to_check:
+                                    has_bet365 = True
+                                    break
+                        except Exception:
+                            # Fallback to HTML content check
                             element_html = await sel_element.inner_html()
                             if bookmaker_id_to_check in element_html or 'bet365' in element_html.lower():
                                 has_bet365 = True
-                        except Exception:
-                            continue
 
                         if not has_bet365:
                             continue
@@ -458,10 +519,6 @@ class FlashscoreScraper(BaseScraper):
                             else:
                                 self.logger.info(
                                     f"✅ ITF BET365 MATCH #{itf_bet365_matches_found}: {match_obj.home_player.name} vs {match_obj.away_player.name}")
-
-                            # Brief pause to not overwhelm slow computer
-                            if itf_bet365_matches_found % 5 == 0:
-                                await asyncio.sleep(1)
 
                     except Exception as e:
                         self.logger.debug(f"Element {element_index} processing error: {e}")
