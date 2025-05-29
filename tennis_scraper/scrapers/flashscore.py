@@ -1,8 +1,6 @@
-"""Flashscore scraper implementation - OPTIMIZED FOR SLOW COMPUTERS with CORRECT selectors."""
-
 import asyncio
 import re
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Callable, Awaitable
 from datetime import datetime, timezone
 
 from playwright.async_api import (
@@ -20,68 +18,66 @@ from ..core.models import TennisMatch, Player, Score, MatchStatus, ScrapingResul
 
 
 class FlashscoreLiveTabClicker:
-    """SIMPLIFIED tab clicker for slow computers."""
-
     def __init__(self, page: Page, logger):
         self.page = page
         self.logger = logger
 
     async def click_live_tab(self) -> bool:
-        """Try only the most reliable strategies for slow computers."""
-
-        # Only try the 3 most reliable strategies to save time
         strategies = [
             self._strategy_simple_text,
             self._strategy_javascript_click,
             self._strategy_force_click
         ]
-
         for i, strategy in enumerate(strategies, 1):
             self.logger.info(f"Trying LIVE tab strategy {i}/{len(strategies)}")
-
             try:
                 success = await strategy()
                 if success:
-                    self.logger.info(f"✅ LIVE tab clicked successfully")
+                    self.logger.info(f"✅ LIVE tab clicked successfully using strategy {i}")
+                    await self.page.wait_for_timeout(5000)
                     return True
             except Exception as e:
-                self.logger.debug(f"Strategy failed: {e}")
-
-        self.logger.error("🚨 LIVE tab strategies failed - continuing anyway")
+                self.logger.debug(f"Strategy {i} failed: {e}")
+        self.logger.error("🚨 All LIVE tab strategies failed.")
         return False
 
     async def _strategy_simple_text(self) -> bool:
-        """Strategy 1: Simple text-based selection."""
         try:
             live_selectors = [
-                "text=LIVE",
-                "text=Live",
-                "*:has-text('LIVE')"
+                "div.filters__tab *:has-text('LIVE')",
+                "button.filters__tab *:has-text('LIVE')",
+                "a.filters__tab *:has-text('LIVE')",
+                ".filters__tab >> text=LIVE",
+                "text=LIVE Games"
             ]
-
             for selector in live_selectors:
+                self.logger.debug(f"Trying LIVE tab selector: {selector}")
                 element = self.page.locator(selector).first
-                if await element.is_visible(timeout=5000):
-                    await element.click(timeout=8000)
-                    await self.page.wait_for_timeout(3000)
-                    return True
+                if await element.is_visible(timeout=3000):
+                    if await element.is_enabled(timeout=1000):
+                        await element.click(timeout=5000, force=True)
+                        return True
             return False
-        except Exception:
+        except Exception as e:
+            self.logger.debug(f"Simple text strategy error: {e}")
             return False
 
     async def _strategy_javascript_click(self) -> bool:
-        """Strategy 2: JavaScript click."""
         try:
+            self.logger.debug("Trying JS click for LIVE tab")
             js_code = """
             () => {
-                const elements = document.querySelectorAll('*');
-                for (let el of elements) {
-                    if (el.textContent && el.textContent.includes('LIVE')) {
-                        const classes = el.className || '';
-                        if (classes.includes('tab') || classes.includes('filter') || 
-                            el.tagName === 'BUTTON' || el.tagName === 'A') {
-                            el.click();
-                            return true;
+                const keywords = ['LIVE', 'Live Games'];
+                const elements = Array.from(document.querySelectorAll('button, a, div, span'));
+                for (const el of elements) {
+                    if (el.textContent && keywords.some(kw => el.textContent.trim().toUpperCase().includes(kw.toUpperCase()))) {
+                        const classes = (el.className || '').toString().toLowerCase();
+                        if ((classes.includes('tab') || classes.includes('filter') || classes.includes('filters__text')) && el.offsetParent !== null) {
+                            const rect = el.getBoundingClientRect();
+                            if (rect.width > 0 && rect.height > 0) {
+                                el.click();
+                                return true;
+                            }
                         }
                     }
                 }
@@ -89,42 +85,43 @@ class FlashscoreLiveTabClicker:
             }
             """
             result = await self.page.evaluate(js_code)
-            if result:
-                await self.page.wait_for_timeout(3000)
-                return True
-            return False
-        except Exception:
+            return bool(result)
+        except Exception as e:
+            self.logger.debug(f"JS click strategy error: {e}")
             return False
 
     async def _strategy_force_click(self) -> bool:
-        """Strategy 3: Force click."""
         try:
-            all_elements = await self.page.query_selector_all("*")
-            # Only check first 50 elements to save time
-            for element in all_elements[:50]:
+            self.logger.debug("Trying force click for LIVE tab")
+            candidate_selectors = "button.filters__tab, a.filters__tab, div.filters__tab, div.tabs__tab"
+            all_elements = await self.page.query_selector_all(candidate_selectors)
+
+            if not all_elements:
+                all_elements = await self.page.query_selector_all("button, a, div")
+
+            for element in all_elements[:70]:
                 try:
-                    text = await element.text_content()
-                    if text and text.strip().upper() == "LIVE":
-                        await element.click(force=True, timeout=3000)
-                        await self.page.wait_for_timeout(3000)
-                        return True
+                    text_content = await element.text_content()
+                    if text_content and "LIVE" in text_content.strip().upper():
+                        tag_name = await element.evaluate('el => el.tagName.toLowerCase()')
+                        class_name = await element.evaluate('el => el.className.toLowerCase()')
+                        if tag_name in ['button', 'a'] or 'tab' in class_name or 'filter' in class_name:
+                            await element.click(force=True, timeout=3000)
+                            return True
                 except Exception:
                     continue
             return False
-        except Exception:
+        except Exception as e:
+            self.logger.debug(f"Force click strategy error: {e}")
             return False
 
 
 class FlashscoreScraper(BaseScraper):
-    """OPTIMIZED Flashscore scraper for slow computers with CORRECT selectors."""
-
     FLASHCORE_BASE_URL = "https://www.flashscoreusa.com"
     TENNIS_URL_PATH = "/tennis/"
-
-    # LIMITS for slow computers
-    MAX_MATCHES_TO_PROCESS = 20  # Limit to first 20 ITF bet365 matches
-    MAX_ELEMENTS_TO_CHECK = 100  # Only check first 100 page elements
-    SIMPLIFIED_TIE_BREAK_CHECK = True  # Use simple tie-break detection
+    MAX_MATCHES_TO_PROCESS = 30
+    MAX_ELEMENTS_TO_CHECK = 500
+    SIMPLIFIED_TIE_BREAK_CHECK = True
 
     async def get_source_name(self) -> str:
         return "flashscore"
@@ -133,40 +130,27 @@ class FlashscoreScraper(BaseScraper):
         return await self._check_site_availability(self.FLASHCORE_BASE_URL, timeout=self.request_timeout)
 
     async def _route_handler(self, route: Route, block_types: List[str], block_names: List[str]):
-        """Block unnecessary resources - AGGRESSIVE blocking for slow computers."""
         resource_type = route.request.resource_type.lower()
         request_url_lower = route.request.url.lower()
-
-        # AGGRESSIVE resource blocking for slow computers
         if resource_type in block_types:
             try:
-                await route.abort()
-                return
+                await route.abort(); return
             except Exception:
                 return
-
-        # Block more aggressively
-        aggressive_blocks = [
-            'analytics', 'ads', 'tracking', 'facebook', 'twitter', 'social',
-            'video', 'youtube', 'vimeo', 'advertisement', 'banner'
-        ]
-
+        aggressive_blocks = ['analytics', 'ads', 'tracking', 'facebook', 'twitter', 'social', 'video', 'youtube',
+                             'vimeo', 'advertisement', 'banner']
         for block_term in aggressive_blocks:
             if block_term in request_url_lower:
                 try:
-                    await route.abort()
-                    return
+                    await route.abort(); return
                 except Exception:
                     return
-
         for name_fragment in block_names:
             if name_fragment.lower() in request_url_lower:
                 try:
-                    await route.abort()
-                    return
+                    await route.abort(); return
                 except Exception:
                     return
-
         try:
             await route.continue_()
         except Exception:
@@ -174,409 +158,374 @@ class FlashscoreScraper(BaseScraper):
 
     async def _simplified_tie_break_detection(self, status_text: str, score_str: str,
                                               home_player_name: str, away_player_name: str) -> tuple[bool, str]:
-        """SIMPLIFIED tie-break detection for slow computers."""
-
-        # Only check the most obvious tie-break indicators
-        simple_keywords = [
-            "match tie break", "match tie-break", "super tiebreak", "first to 10"
-        ]
-
-        # Check status text
+        simple_keywords = ["match tie break", "match tie-break", "super tiebreak", "first to 10", "tie break"]
         if status_text:
             status_lower = status_text.lower()
             for keyword in simple_keywords:
                 if keyword in status_lower:
-                    self.logger.critical(f"🚨 TIE BREAK: {home_player_name} vs {away_player_name}")
+                    self.logger.critical(
+                        f"🚨 TIE BREAK (status): {home_player_name} vs {away_player_name} by status: '{keyword}'")
                     return True, f"status_{keyword.replace(' ', '_')}"
-
-        # Simple score pattern check - look for [10-8] style brackets
         if score_str and '[' in score_str and ']' in score_str:
             bracket_match = re.search(r'\[(\d+)-(\d+)\]', score_str)
             if bracket_match:
                 home_tb, away_tb = int(bracket_match.group(1)), int(bracket_match.group(2))
-                if home_tb >= 10 or away_tb >= 10:
+                if (home_tb >= 7 or away_tb >= 7) and abs(home_tb - away_tb) >= 0:
                     self.logger.critical(
-                        f"🚨 TIE BREAK: {home_player_name} vs {away_player_name} - [{home_tb}-{away_tb}]")
+                        f"🚨 TIE BREAK (score): {home_player_name} vs {away_player_name} by score: [{home_tb}-{away_tb}]")
                     return True, f"score_bracket_{home_tb}_{away_tb}"
-
+        if "tie" in status_text.lower() and "break" in status_text.lower():
+            self.logger.critical(
+                f"🚨 TIE BREAK (generic status): {home_player_name} vs {away_player_name} by status: '{status_text}'")
+            return True, "status_generic_tie_break"
         return False, "none"
 
-    async def _process_match_fast(self, sel_element: ElementHandle, element_index: int,
-                                  bookmaker_id_to_check: str) -> Optional[TennisMatch]:
-        """FAST match processing for slow computers with CORRECT selectors."""
+    async def _process_match_from_live_tab(self, match_element: ElementHandle, current_tournament_name: str,
+                                           element_index: int, bookmaker_id_to_check: str, page_url: str) -> Optional[
+        TennisMatch]:
+        home_player_name = "N/A"
+        away_player_name = "N/A"
         try:
-            # FIRST: Check if this is an ITF match - CORRECT SELECTORS
-            tournament_selectors = [
-                "span.wcl-overline_rOFfd",  # ACTUAL tournament selector from inspection
-                ".wcl-overline_rOFfd",
-                "[class*='wcl-overline']"
-            ]
-            tournament_name = await self._get_text_fast(sel_element, tournament_selectors, default="")
-
-            # Skip if not ITF
-            if not tournament_name or "itf" not in tournament_name.lower():
-                return None
-
-            # Quick player name extraction with CORRECT selectors
-            home_selectors = [
-                ".event__participant--home",  # ACTUAL home player selector
-                ".event__participant.event__participant--home"
-            ]
-            away_selectors = [
-                ".event__participant--away",  # ACTUAL away player selector
-                ".event__participant.event__participant--away"
-            ]
-
-            home_player_name = await self._get_text_fast(sel_element, home_selectors)
-            away_player_name = await self._get_text_fast(sel_element, away_selectors)
+            home_player_name = await self._get_text_from_element(match_element, ".event__participant--home")
+            away_player_name = await self._get_text_from_element(match_element, ".event__participant--away")
 
             if not home_player_name or not away_player_name:
+                self.logger.info(
+                    f"Live Idx {element_index}: Skipping match in '{current_tournament_name}' (Players: {home_player_name}/{away_player_name}) due to missing player names.")
                 return None
 
-            # Quick score and status with CORRECT selectors
-            score_selectors = [
-                ".event__score--home",  # ACTUAL home score selector
-                ".wcl-matchRowScore_jcvjd.event__score--home"
-            ]
-            home_score = await self._get_text_fast(sel_element, score_selectors)
+            home_score = await self._get_text_from_element(match_element, ".event__score--home")
+            away_score = await self._get_text_from_element(match_element, ".event__score--away")
+            score_str = f"{home_score}-{away_score}" if home_score is not None and away_score is not None else ""
 
-            score_selectors = [
-                ".event__score--away",  # ACTUAL away score selector
-                ".wcl-matchRowScore_jcvjd.event__score--away"
-            ]
-            away_score = await self._get_text_fast(sel_element, score_selectors)
+            status_text_from_attr = ""
+            status_element_on_score = await match_element.query_selector(".event__score[data-state]")
+            if status_element_on_score:
+                status_text_from_attr = (
+                            await status_element_on_score.get_attribute("data-state") or "").strip().lower()
 
-            score_str = f"{home_score}-{away_score}" if home_score and away_score else ""
+            status_text_from_stage_block = await self._get_text_from_element(match_element, ".event__stage--block",
+                                                                             default="")
+            if not status_text_from_stage_block:
+                status_text_from_stage_block = await self._get_text_from_element(match_element, ".event__stage",
+                                                                                 default="")
+            final_status_text = status_text_from_attr if status_text_from_attr else status_text_from_stage_block
 
-            status_selectors = [
-                "[data-state]",  # From the score element inspection
-                ".wcl-matchRowScore_jcvjd[data-state]",
-                ".event__stage", ".event__time"
-            ]
-            status_text = await self._get_text_fast(sel_element, status_selectors, default="")
+            is_match_tie_break, detection_method = await self._simplified_tie_break_detection(
+                final_status_text, score_str, home_player_name, away_player_name
+            )
 
-            # SIMPLIFIED tie-break detection
-            is_match_tie_break = False
-            detection_method = "none"
+            has_bet365_indicator = False
+            self.logger.info(
+                f"Live Idx {element_index} ({home_player_name} vs {away_player_name}) in '{current_tournament_name}': Checking for Bet365 ID '{bookmaker_id_to_check}'...")
+            try:
+                bet_wrappers = await match_element.query_selector_all("div.liveBetWrapper, [class*='liveBetWrapper']")
+                if not bet_wrappers:
+                    self.logger.info(f"Live Idx {element_index}: No .liveBetWrapper elements found.")
+                else:
+                    self.logger.info(
+                        f"Live Idx {element_index}: Found {len(bet_wrappers)} liveBetWrapper-like elements.")
+                    for i, wrapper in enumerate(bet_wrappers):
+                        bookmaker_id_attr = await wrapper.get_attribute("data-bookmaker-id")
+                        self.logger.info(
+                            f"Live Idx {element_index}: Wrapper {i} data-bookmaker-id: '{bookmaker_id_attr}'")
+                        if bookmaker_id_attr == bookmaker_id_to_check:
+                            has_bet365_indicator = True
+                            self.logger.info(
+                                f"Live Idx {element_index}: Bet365 ID '{bookmaker_id_to_check}' FOUND in wrapper.")
+                            break
+                    if not has_bet365_indicator:
+                        self.logger.info(
+                            f"Live Idx {element_index}: Bet365 ID '{bookmaker_id_to_check}' NOT found in any wrapper's data-bookmaker-id.")
 
-            if self.SIMPLIFIED_TIE_BREAK_CHECK:
-                is_match_tie_break, detection_method = await self._simplified_tie_break_detection(
-                    status_text, score_str, home_player_name, away_player_name
-                )
+                if not has_bet365_indicator:
+                    self.logger.info(
+                        f"Live Idx {element_index}: Bet365 ID not in wrappers. Falling back to inner HTML check for '{bookmaker_id_to_check}' or 'bet365'.")
+                    element_html = await match_element.inner_html()
+                    if bookmaker_id_to_check in element_html or '549' in element_html or 'bet365' in element_html.lower():
+                        has_bet365_indicator = True
+                        self.logger.info(f"Live Idx {element_index}: Bet365 indicator FOUND in inner HTML.")
+                    else:
+                        self.logger.info(f"Live Idx {element_index}: Bet365 indicator NOT found in inner HTML.")
+            except Exception as e_bet:
+                self.logger.error(f"Live Idx {element_index}: Error during Bet365 check: {e_bet}", exc_info=True)
 
-            # Generate simple match ID
-            match_id = f"flashscore_itf_{element_index}_{hash(home_player_name + away_player_name) % 10000}"
+            if not has_bet365_indicator:
+                self.logger.info(
+                    f"Live Idx {element_index} ({home_player_name} vs {away_player_name}) in '{current_tournament_name}' does NOT have Bet365 ID '{bookmaker_id_to_check}'. Skipping.")
+                return None
+            else:
+                self.logger.info(
+                    f"Live Idx {element_index} ({home_player_name} vs {away_player_name}) in '{current_tournament_name}' HAS Bet365 indicator. Proceeding.")
 
-            # Create metadata
+            match_id_from_link = await match_element.get_attribute("aria-describedby")
+            match_id_from_id_attr = await match_element.get_attribute("id")
+            match_id = match_id_from_link or match_id_from_id_attr or f"flashscore_itf_{element_index}_{hash(home_player_name + away_player_name) % 10000}"
+            if match_id.startswith("g_2_"):
+                match_id = match_id[4:]
+
             metadata_dict = {
-                'has_bet365_indicator': True,
+                'has_bet365_indicator': has_bet365_indicator,
                 'is_match_tie_break': is_match_tie_break,
                 'tie_break_detection_method': detection_method,
                 'element_index': element_index,
-                'simplified_processing': True,
-                'tournament_name': tournament_name,
+                'tournament_name_header': current_tournament_name,
                 'is_itf_match': True
             }
 
-            # Create match object
             source_name = await self.get_source_name()
+            parsed_status = self._parse_match_status(final_status_text, score_str)
 
             match_obj = TennisMatch(
                 home_player=Player(name=self._parse_player_name(home_player_name)),
                 away_player=Player(name=self._parse_player_name(away_player_name)),
                 score=Score.from_string(score_str),
-                status=self._parse_match_status(status_text, score_str),
-                tournament=tournament_name,
-                tournament_level=self._determine_tournament_level_flashscore(tournament_name),
-                surface=Surface.UNKNOWN,
+                status=parsed_status,
+                tournament=current_tournament_name,
+                tournament_level=self._determine_tournament_level_flashscore(current_tournament_name),
+                surface=self._determine_surface_from_name(current_tournament_name),
                 source=source_name,
-                source_url="",
+                source_url=page_url,
                 match_id=match_id,
                 scheduled_time=None,
                 last_updated=datetime.now(timezone.utc),
                 metadata=metadata_dict
             )
-
             return match_obj
-
         except Exception as e:
-            self.logger.debug(f"Fast processing failed for element {element_index}: {e}")
+            self.logger.error(
+                f"Error processing live match element {element_index} (Tourney: '{current_tournament_name}', Players: {home_player_name}v{away_player_name}): {e}",
+                exc_info=True)
             return None
 
     def _determine_tournament_level_flashscore(self, tournament_name: str) -> TournamentLevel:
-        """Determine tournament level from name."""
-        if not tournament_name:
-            return TournamentLevel.UNKNOWN
-
+        if not tournament_name: return TournamentLevel.UNKNOWN
         name_lower = tournament_name.lower()
-        if "itf men" in name_lower or "itf women" in name_lower:
+        if any(s in name_lower for s in ["m15", "w15", "15k"]): return TournamentLevel.ITF_15K
+        if any(s in name_lower for s in ["m25", "w25", "25k"]): return TournamentLevel.ITF_25K
+        if any(s in name_lower for s in ["m40", "w40", "40k"]): return TournamentLevel.ITF_40K
+        if any(s in name_lower for s in ["m60", "w60", "60k"]): return TournamentLevel.ITF_60K
+        if any(s in name_lower for s in ["m80", "w80", "80k"]): return TournamentLevel.ITF_80K
+        if any(s in name_lower for s in ["m100", "w100", "100k"]): return TournamentLevel.ITF_100K
+        if "itf men" in name_lower or "itf women" in name_lower or "itf" in name_lower:  # General ITF check
+            if "men" in name_lower and "singles" in name_lower: return TournamentLevel.ITF_25K  # Default for ITF Men Singles
+            # Could add more specific defaults for ITF Women or Doubles if needed
             return TournamentLevel.ITF_25K
-        if any(s in name_lower for s in ["m15", "w15", "15k"]):
-            return TournamentLevel.ITF_15K
-        if any(s in name_lower for s in ["m25", "w25", "25k"]):
-            return TournamentLevel.ITF_25K
-        if any(s in name_lower for s in ["m40", "w40", "40k"]):
-            return TournamentLevel.ITF_40K
-        if any(s in name_lower for s in ["m60", "w60", "60k"]):
-            return TournamentLevel.ITF_60K
-        if any(s in name_lower for s in ["m80", "w80", "80k"]):
-            return TournamentLevel.ITF_80K
-        if any(s in name_lower for s in ["m100", "w100", "100k"]):
-            return TournamentLevel.ITF_100K
-        return TournamentLevel.ITF_25K  # Default for ITF
+        return TournamentLevel.UNKNOWN
 
-    async def _get_text_fast(self, parent_element: ElementHandle, selectors: List[str], default: str = "") -> str:
-        """FAST text extraction - try ALL selectors for main page."""
-        for selector in selectors:
-            try:
-                element = await parent_element.query_selector(selector)
-                if element:
-                    text = await element.text_content()
-                    if text and text.strip():
-                        return text.strip()
-            except Exception:
-                continue
+    def _determine_surface_from_name(self, tournament_name: str) -> Surface:
+        if not tournament_name: return Surface.UNKNOWN
+        name_lower = tournament_name.lower()
+        if "hard" in name_lower:
+            return Surface.INDOOR_HARD if "indoor" in name_lower else Surface.HARD
+        if "clay" in name_lower:
+            return Surface.INDOOR_CLAY if "indoor" in name_lower else Surface.CLAY
+        if "grass" in name_lower: return Surface.GRASS
+        if "carpet" in name_lower: return Surface.CARPET
+        return Surface.UNKNOWN
+
+    async def _get_text_from_element(self, parent_element: ElementHandle, selector: str, default: str = "") -> str:
+        try:
+            element = await parent_element.query_selector(selector)
+            if element:
+                text = await element.text_content()
+                if text is not None and text.strip():
+                    return text.strip()
+        except Exception as e:
+            self.logger.debug(f"Could not get text for selector '{selector}' within parent: {e}")
         return default
 
-    async def scrape_matches(self) -> ScrapingResult:
+    async def scrape_matches(self, progress_callback: Optional[
+        Callable[[TennisMatch], Awaitable[None]]] = None) -> ScrapingResult:
         start_time_dt = datetime.now(timezone.utc)
         matches_found: List[TennisMatch] = []
-        processed_elements_count = 0
         error_message: Optional[str] = None
         success = False
         source_name = await self.get_source_name()
+        current_page_url = ""
+        live_tab_successfully_clicked_flag = False
 
-        # Get config values
         bet365_indicator_fragment = self.config.get('flashscore_bet365_indicator_fragment', '/549/')
         bookmaker_id_to_check = "".join(filter(str.isdigit, bet365_indicator_fragment))
+        if not bookmaker_id_to_check: bookmaker_id_to_check = "549"
 
-        if not bookmaker_id_to_check:
-            bookmaker_id_to_check = "549"  # Default fallback
+        self.logger.info(
+            f"🎯 ITF MEN-SINGLES SCRAPING (LIVE TAB STRATEGY) - Max {self.MAX_MATCHES_TO_PROCESS} matches. Bet365 ID: {bookmaker_id_to_check}")
 
-        self.logger.info(f"🎯 OPTIMIZED ITF SCRAPING for slow computer - Max {self.MAX_MATCHES_TO_PROCESS} matches")
-
-        # OPTIMIZED settings for slow computers
-        headless_mode = True  # Force headless for speed
-        user_agent_new = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-
-        # AGGRESSIVE resource blocking
-        block_resource_types = ["image", "stylesheet", "font", "media", "imageset", "websocket", "other"]
-        block_resource_names = [
-            "google-analytics.com", "googletagmanager.com", "facebook.com", "twitter.com",
-            "ads", "advertising", "doubleclick", "adsystem", "googlesyndication"
-        ]
-
-        # INCREASED timeouts for slow computers
-        element_timeout_ms = 45000  # 45 seconds
+        headless_mode = True
+        user_agent_new = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        block_resource_types = ["image", "font", "media", "imageset", "websocket", "other"]
+        block_resource_names = ["google-analytics.com", "googletagmanager.com", "facebook.com", "twitter.com",
+                                "doubleclick", "adsystem"]
+        element_timeout_ms = 45000
 
         playwright = None
         browser: Optional[Browser] = None
         context: Optional[BrowserContext] = None
         page: Optional[Page] = None
 
-        try:
-            self.logger.info("🚀 Starting optimized Playwright for slow computer...")
-            playwright = await async_playwright().start()
+        processed_elements_count = 0
+        total_elements_on_page = 0
+        all_page_elements_list: List[ElementHandle] = []
 
-            # Minimal browser args for slow computers
+        try:
+            self.logger.info("🚀 Starting Playwright...")
+            playwright = await async_playwright().start()
             browser_args = ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu',
                             '--disable-features=VizDisplayCompositor']
-
             browser = await playwright.chromium.launch(headless=headless_mode, args=browser_args)
-
             context = await browser.new_context(
-                user_agent=user_agent_new,
-                viewport={'width': 1280, 'height': 720},  # Smaller viewport
-                java_script_enabled=True,
-                ignore_https_errors=True
+                user_agent=user_agent_new, viewport={'width': 1366, 'height': 768},
+                java_script_enabled=True, ignore_https_errors=True
             )
-
-            # AGGRESSIVE resource blocking
             await context.route("**/*",
                                 lambda route: self._route_handler(route, block_resource_types, block_resource_names))
-
             page = await context.new_page()
+            current_page_url = f"{self.FLASHCORE_BASE_URL}{self.TENNIS_URL_PATH}"
+            self.logger.info(f"📍 Navigating to: {current_page_url}")
+            await page.goto(current_page_url, wait_until="domcontentloaded", timeout=element_timeout_ms)
 
-            # Navigate to Flashscore USA Tennis section
-            full_url = f"{self.FLASHCORE_BASE_URL}{self.TENNIS_URL_PATH}"
-            self.logger.info(f"📍 Navigating to: {full_url}")
-            await page.goto(full_url, wait_until="domcontentloaded", timeout=element_timeout_ms)
-
-            # Handle cookies quickly
             try:
-                cookie_btn = page.locator("#onetrust-accept-btn-handler")
-                if await cookie_btn.is_visible(timeout=8000):
-                    await cookie_btn.click(timeout=5000)
-                    await page.wait_for_timeout(2000)
+                cookie_btn_selectors = ["#onetrust-accept-btn-handler", "button:has-text('Accept All')"]
+                for sel in cookie_btn_selectors:
+                    cookie_btn = page.locator(sel).first
+                    if await cookie_btn.is_visible(timeout=8000):
+                        await cookie_btn.click(timeout=5000)
+                        await page.wait_for_timeout(2000)
+                        self.logger.info("Cookie banner accepted.")
+                        break
             except Exception:
-                self.logger.debug("Cookie handling skipped")
+                self.logger.debug("Cookie handling skipped or failed.")
 
-            # Skip LIVE tab - just get all matches with UPDATED SELECTORS
-            self.logger.info("🎯 Using main page selectors for flashscoreusa.com")
+            live_tab_clicker = FlashscoreLiveTabClicker(page, self.logger)
+            live_tab_successfully_clicked_flag = await live_tab_clicker.click_live_tab()
 
-            # Wait for content to load
-            await page.wait_for_timeout(8000)
+            if not live_tab_successfully_clicked_flag:
+                self.logger.warning(
+                    "⚠️ Failed to click LIVE tab. Scraping current page. Results might be limited or incorrect.")
+            else:
+                self.logger.info("✅ Successfully clicked LIVE tab. Waiting for content to fully load...")
+                await page.wait_for_timeout(8000)
 
-            # SCROLL DOWN TO FIND ITF MATCHES - they're way down the page!
-            self.logger.info("📜 Scrolling down to find ITF matches...")
-            for scroll_attempt in range(10):  # Try scrolling 10 times
-                await page.evaluate("window.scrollBy(0, 1000)")  # Scroll down 1000px
-                await page.wait_for_timeout(1000)  # Wait 1 second between scrolls
+            current_page_url = page.url
 
-                # Check if we can find ITF text
-                itf_elements = await page.query_selector_all("*:has-text('ITF')")
-                self.logger.info(f"📜 Scroll {scroll_attempt + 1}: Found {len(itf_elements)} elements with 'ITF'")
+            self.logger.info("📜 Scrolling down on current tab to load all matches...")
+            for i in range(10):
+                await page.evaluate("window.scrollBy(0, window.innerHeight * 2)")
+                self.logger.debug(f"Scroll attempt {i + 1}")
+                await page.wait_for_timeout(1500)
 
-                if len(itf_elements) > 0:
-                    self.logger.info("✅ Found ITF section after scrolling!")
+            all_elements_selector = "div.wcl-header_uBhYi.wclLeagueHeader, a.eventRowLink, div.event__match, div.event__match--scheduled, div.event__match--live, div.event__match--static"
+            all_page_elements_list = await page.query_selector_all(all_elements_selector)
+            total_elements_on_page = len(all_page_elements_list)
+            self.logger.info(
+                f"Found {total_elements_on_page} potential header/match elements on the page using selector: '{all_elements_selector}'.")
+
+            itf_bet365_matches_count = 0
+            current_processing_tournament_context = "Unknown Tournament (Context Not Set)"
+            is_context_itf_men_singles = False
+
+            elements_to_iterate = all_page_elements_list[:self.MAX_ELEMENTS_TO_CHECK]
+            processed_elements_count = len(elements_to_iterate)
+            self.logger.info(
+                f"Will process up to {processed_elements_count} elements (limited by MAX_ELEMENTS_TO_CHECK: {self.MAX_ELEMENTS_TO_CHECK}).")
+
+            for idx, element in enumerate(elements_to_iterate):
+                if itf_bet365_matches_count >= self.MAX_MATCHES_TO_PROCESS:
+                    self.logger.info(f"Reached ITF MEN-SINGLES match limit ({self.MAX_MATCHES_TO_PROCESS}). Stopping.")
                     break
-            else:
-                self.logger.warning("⚠️ Couldn't find ITF section after scrolling")
 
-            # Get match elements with CORRECT selectors for main page
-            self.logger.info(f"🔍 Looking for match elements on main tennis page...")
+                element_classes = (await element.get_attribute("class") or "").lower()
+                # Check if the element is a tournament header using the specific classes you found
+                is_tournament_header_element = "wclleagueheader" in element_classes and "wcl-header_ubhyi" in element_classes
 
-            match_elements: List[ElementHandle] = []
-            selectors_to_try = [
-                # CORRECT selectors based on inspection
-                "a.eventRowLink",  # Main match container
-                "[class*='eventRowLink']",
-                "div[id*='g_2_']",  # Match IDs we saw
-                "[aria-describedby*='g_2_']"
-            ]
+                if is_tournament_header_element:
+                    title_box_el = await element.query_selector("div.event__titleBox")
+                    extracted_full_tournament_name = ""
+                    if title_box_el:
+                        part1_el = await title_box_el.query_selector("span.wcl-overline_rOFfd")
+                        part2_el = await title_box_el.query_selector("a.wcl-link_bLtj3")
+                        part1_text = (await part1_el.text_content() or "").strip() if part1_el else ""
+                        part2_text = (await part2_el.text_content() or "").strip() if part2_el else ""
+                        if part1_text and part2_text:
+                            extracted_full_tournament_name = f"{part1_text}: {part2_text}"
+                        elif part1_text:
+                            extracted_full_tournament_name = part1_text
+                        elif part2_text:
+                            extracted_full_tournament_name = part2_text
 
-            for selector in selectors_to_try:
-                try:
-                    elements = await page.query_selector_all(selector)
-                    self.logger.info(f"🔍 Selector '{selector}' found {len(elements)} elements")
-                    if elements:
-                        # LIMIT elements for slow computers
-                        match_elements = elements[:self.MAX_ELEMENTS_TO_CHECK]
+                    self.logger.info(
+                        f"Element {idx} IS a Tournament Header. Extracted Name: '{extracted_full_tournament_name}'")
+                    current_processing_tournament_context = extracted_full_tournament_name  # Update context with the new header
+
+                    name_lower = current_processing_tournament_context.lower()
+                    # Explicitly check for "ITF", "MEN", and "SINGLES"
+                    if "itf" in name_lower and "men" in name_lower and "singles" in name_lower:
+                        is_context_itf_men_singles = True
                         self.logger.info(
-                            f"📊 Using {len(match_elements)} elements from selector '{selector}' (limited from {len(elements)})")
-                        break
-                except Exception as e:
-                    self.logger.debug(f"Selector '{selector}' failed: {e}")
-                    continue
-
-            if not match_elements:
-                self.logger.warning("⚠️ No match elements found")
-                success = True  # Don't fail completely
-                error_message = "No match elements found but completed successfully"
-            else:
-                processed_elements_count = len(match_elements)
-                itf_bet365_matches_found = 0
-
-                # Process elements with DEBUG to see what's wrong
-                self.logger.info(f"🔍 DEBUG: Processing first 5 elements to see what's wrong...")
-                for element_index, sel_element in enumerate(match_elements[:5]):
-                    try:
-                        # DEBUG: See what's actually in these elements
-                        element_text = await sel_element.text_content()
+                            f"--- Context Updated: Now processing matches under ITF MEN - SINGLES Tournament: '{current_processing_tournament_context}' ---")
+                    else:
+                        is_context_itf_men_singles = False  # Reset if not ITF Men Singles
                         self.logger.info(
-                            f"🔍 Element {element_index} text: {element_text[:300] if element_text else 'NO TEXT'}")
+                            f"--- Context Updated: Header is NOT ITF MEN - SINGLES: '{current_processing_tournament_context}' (Setting ITF Men Singles Context to False) ---")
+                    continue  # This element was a header, move to the next element in the main loop
 
-                        # Check tournament extraction
-                        tournament_selectors = ["span.wcl-overline_rOFfd", ".wcl-overline_rOFfd",
-                                                "[class*='wcl-overline']"]
-                        tournament_name = await self._get_text_fast(sel_element, tournament_selectors, default="")
-                        self.logger.info(f"🔍 Element {element_index} tournament: '{tournament_name}'")
+                # If the element was not a header, then it might be a match row.
+                # Only process it if the current context is an ITF MEN - SINGLES tournament.
+                if is_context_itf_men_singles:
+                    # Check if the element looks like a match row (e.g., contains participant info)
+                    # This helps to avoid trying to process non-match elements that might be siblings to headers
+                    home_participant_el = await element.query_selector(".event__participant--home")
+                    if home_participant_el:  # It's likely a match row
+                        self.logger.info(
+                            f"Element {idx} is a match row under current ITF MEN - SINGLES context: '{current_processing_tournament_context}'. Processing...")
+                        match_obj = await self._process_match_from_live_tab(
+                            element,
+                            current_processing_tournament_context,  # Pass the confirmed ITF Men Singles context
+                            idx,
+                            bookmaker_id_to_check,
+                            current_page_url
+                        )
 
-                        # Check bet365 detection
-                        bet_wrappers = await sel_element.query_selector_all("div.liveBetWrapper")
-                        self.logger.info(f"🔍 Element {element_index} has {len(bet_wrappers)} liveBetWrapper elements")
-
-                        for wrapper in bet_wrappers:
-                            bookmaker_id = await wrapper.get_attribute("data-bookmaker-id")
-                            self.logger.info(f"🔍   Bookmaker ID: {bookmaker_id}")
-
-                    except Exception as e:
-                        self.logger.error(f"Debug element {element_index} error: {e}")
-
-                # ACTUAL processing starts here
-                for element_index, sel_element in enumerate(match_elements):
-                    # STOP if we hit our match limit
-                    if itf_bet365_matches_found >= self.MAX_MATCHES_TO_PROCESS:
-                        self.logger.info(f"🛑 Reached ITF match limit ({self.MAX_MATCHES_TO_PROCESS}) - stopping")
-                        break
-
-                    try:
-                        # CORRECT bet365 check using liveBetWrapper
-                        has_bet365 = False
-                        try:
-                            # Look for liveBetWrapper with correct bookmaker ID
-                            bet_wrappers = await sel_element.query_selector_all("div.liveBetWrapper")
-                            for wrapper in bet_wrappers:
-                                bookmaker_id = await wrapper.get_attribute("data-bookmaker-id")
-                                if bookmaker_id == bookmaker_id_to_check:
-                                    has_bet365 = True
-                                    break
-                        except Exception:
-                            # Fallback to HTML content check
-                            element_html = await sel_element.inner_html()
-                            if bookmaker_id_to_check in element_html or 'bet365' in element_html.lower():
-                                has_bet365 = True
-
-                        if not has_bet365:
-                            continue
-
-                        # Fast processing with ITF filtering
-                        match_obj = await self._process_match_fast(sel_element, element_index, bookmaker_id_to_check)
-
-                        if match_obj:  # Will be None if not ITF
-                            itf_bet365_matches_found += 1
+                        if match_obj:
+                            itf_bet365_matches_count += 1
                             matches_found.append(match_obj)
-                            match_obj.source_url = page.url
+                            if progress_callback:
+                                await progress_callback(match_obj)
 
-                            # Log tie breaks loudly
                             if match_obj.metadata.get('is_match_tie_break'):
                                 self.logger.critical(
-                                    f"🚨🚨🚨 ITF TIE BREAK #{itf_bet365_matches_found}: {match_obj.home_player.name} vs {match_obj.away_player.name}")
+                                    f"ITF MEN-SINGLES TIE BREAK #{itf_bet365_matches_count}: {match_obj.home_player.name} vs {match_obj.away_player.name} from '{match_obj.tournament}'")
                             else:
                                 self.logger.info(
-                                    f"✅ ITF BET365 MATCH #{itf_bet365_matches_found}: {match_obj.home_player.name} vs {match_obj.away_player.name}")
+                                    f"ITF MEN-SINGLES BET365 MATCH #{itf_bet365_matches_count}: {match_obj.home_player.name} vs {match_obj.away_player.name} from '{match_obj.tournament}'")
+                    # else:
+                    # self.logger.debug(f"Element {idx} under ITF Men Singles context '{current_processing_tournament_context}' but doesn't look like a match row (no home participant). Skipping.")
+                # else:
+                # self.logger.debug(f"Element {idx} skipped: current context ('{current_processing_tournament_context}') is not ITF Men Singles.")
 
-                    except Exception as e:
-                        self.logger.debug(f"Element {element_index} processing error: {e}")
-
-                success = True
-                self.logger.info(f"✅ OPTIMIZED ITF SCRAPING COMPLETE!")
-                self.logger.info(f"📊 Processed: {processed_elements_count} elements")
-                self.logger.info(f"🎯 Found: {len(matches_found)} ITF bet365 matches")
-
-                tie_break_count = len([m for m in matches_found if m.metadata.get('is_match_tie_break')])
-                if tie_break_count > 0:
-                    self.logger.critical(f"🚨 {tie_break_count} ITF TIE BREAK MATCHES FOUND!")
+            success = True
+            self.logger.info(
+                f"✅ SCRAPING COMPLETE (LIVE TAB STRATEGY)! Processed {processed_elements_count} elements from page.")
+            self.logger.info(f"📊 Found: {len(matches_found)} ITF MEN - SINGLES Bet365 matches.")
+            tie_break_count = len([m for m in matches_found if m.metadata.get('is_match_tie_break')])
+            if tie_break_count > 0:
+                self.logger.critical(f"🚨 {tie_break_count} ITF MEN - SINGLES TIE BREAK MATCHES FOUND!")
+            if not matches_found and total_elements_on_page > 0:
+                self.logger.warning(
+                    "Found elements on page, but none were classified as ITF MEN - SINGLES Bet365 matches. Check tournament header identification on LIVE tab, the MEN - SINGLES filter, and Bet365 indicator logic.")
 
         except Exception as e:
-            self.logger.error(f"❌ Scraping error: {e}")
+            self.logger.error(f"❌ Scraping error: {e}", exc_info=True)
             error_message = str(e)
             success = False
         finally:
-            # Cleanup
-            if page:
-                try:
-                    await page.close()
-                except Exception:
-                    pass
-            if context:
-                try:
-                    await context.close()
-                except Exception:
-                    pass
-            if browser:
-                try:
-                    await browser.close()
-                except Exception:
-                    pass
-            if playwright:
-                try:
-                    await playwright.stop()
-                except Exception:
-                    pass
+            if page: await page.close()
+            if context: await context.close()
+            if browser: await browser.close()
+            if playwright: await playwright.stop()
 
         duration = (datetime.now(timezone.utc) - start_time_dt).total_seconds()
-
         return ScrapingResult(
             source=source_name,
             matches=matches_found,
@@ -585,17 +534,16 @@ class FlashscoreScraper(BaseScraper):
             duration_seconds=duration,
             timestamp=datetime.now(timezone.utc),
             metadata={
-                'processed_elements': processed_elements_count,
-                'itf_bet365_matches_found': len(matches_found),
+                'processed_elements_from_page': processed_elements_count,
+                'total_elements_on_page': total_elements_on_page,
+                'itf_men_singles_bet365_matches_found': len(matches_found),
                 'tie_break_matches': len([m for m in matches_found if m.metadata.get('is_match_tie_break')]),
-                'optimized_for_slow_computer': True,
-                'match_limit_applied': self.MAX_MATCHES_TO_PROCESS,
-                'elements_limit_applied': self.MAX_ELEMENTS_TO_CHECK,
-                'itf_filtering_applied': True
+                'attempted_live_tab_click': True,
+                'live_tab_successfully_clicked': live_tab_successfully_clicked_flag,
+                'match_limit_applied': self.MAX_MATCHES_TO_PROCESS
             }
         )
 
     async def cleanup(self):
-        """Cleanup resources."""
         self.logger.info("🧹 Cleaning up FlashscoreScraper...")
         await super().cleanup()

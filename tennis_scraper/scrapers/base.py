@@ -1,11 +1,7 @@
-"""
-Base class for web scrapers with common utilities.
-"""
-
 import asyncio
 import aiohttp
 from abc import abstractmethod
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any, Tuple, Callable, Awaitable
 from datetime import datetime
 
 from ..core.interfaces import MatchScraper
@@ -25,14 +21,10 @@ class BaseScraper(MatchScraper):
         self._session: Optional[aiohttp.ClientSession] = None
         self.request_timeout = config.get('request_timeout', 10)
         self.max_retries = config.get('max_retries', 3)
-        # delay_between_requests is inherited from MatchScraper and set in its __init__
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get or create an aiohttp ClientSession."""
         if self._session is None or self._session.closed:
-            # You might want to configure connectors, timeouts, etc. here
-            # For example, adding a TCPConnector with SSL verification options
-            # connector = aiohttp.TCPConnector(ssl=False) # If facing SSL issues, but use with caution
             self._session = aiohttp.ClientSession(
                 headers={'User-Agent': self.config.get('user_agent', 'Mozilla/5.0')}
             )
@@ -43,7 +35,7 @@ class BaseScraper(MatchScraper):
         try:
             session = await self._get_session()
             async with session.head(url, timeout=timeout, allow_redirects=True) as response:
-                return response.status < 400 # Typically 2xx or 3xx are OK
+                return response.status < 400
         except asyncio.TimeoutError:
             self.logger.warning(f"Timeout checking availability for {url}")
             return False
@@ -59,12 +51,11 @@ class BaseScraper(MatchScraper):
         if not raw_name:
             return "Unknown Player"
         name = raw_name.strip()
-        # Common prefixes/suffixes to remove - this might need to be source-specific
         prefixes_suffixes = ["Mr.", "Ms.", "Jr.", "Sr."]
         for ps in prefixes_suffixes:
             if name.startswith(ps):
                 name = name[len(ps):].strip()
-            if name.endswith(ps): # Less common for suffix, but possible
+            if name.endswith(ps):
                 name = name[:-len(ps)].strip()
         return name if name else "Unknown Player"
 
@@ -73,24 +64,20 @@ class BaseScraper(MatchScraper):
         """Parses a typical score string (e.g., "6-4 3-6") into a Score object."""
         if not score_str:
             return Score()
-        return Score.from_string(score_str) # Delegate to Score model's parser
+        return Score.from_string(score_str)
 
     def _parse_match_status(self, status_str: Optional[str], score_str: Optional[str] = None) -> MatchStatus:
         """
         IMPROVED match status parsing with better logic.
         """
         if not status_str:
-            # If no status but there's a score, try to infer
             if score_str and score_str.strip() and score_str != "-":
                 return MatchStatus.LIVE
             return MatchStatus.SCHEDULED
 
         s_lower = status_str.lower().strip()
-
-        # Remove common prefixes/suffixes that might interfere
         s_lower = s_lower.replace("'", "").replace('"', '')
 
-        # FINISHED indicators (check first - most specific)
         finished_keywords = [
             "fin.", "finished", "completed", "ended", "full time", "ft",
             "final", "result", "won", "lost", "victory", "defeat"
@@ -98,7 +85,6 @@ class BaseScraper(MatchScraper):
         if any(kw in s_lower for kw in finished_keywords):
             return MatchStatus.FINISHED
 
-        # LIVE indicators (very specific)
         live_keywords = [
             "live", "playing", "in progress", "ongoing", "current",
             "1st set", "2nd set", "3rd set", "4th set", "5th set",
@@ -108,18 +94,16 @@ class BaseScraper(MatchScraper):
         if any(kw in s_lower for kw in live_keywords):
             return MatchStatus.LIVE
 
-        # Time-based indicators (usually scheduled)
         time_patterns = [
-            r'\d{1,2}:\d{2}',  # 14:30, 9:45, etc.
-            r'\d{1,2}h\d{2}',  # 14h30
-            r'\d{1,2}\.\d{2}',  # 14.30
+            r'\d{1,2}:\d{2}',
+            r'\d{1,2}h\d{2}',
+            r'\d{1,2}\.\d{2}',
         ]
         import re
         for pattern in time_patterns:
             if re.search(pattern, s_lower):
                 return MatchStatus.SCHEDULED
 
-        # OTHER specific statuses
         if any(kw in s_lower for kw in ["postp.", "postponed", "delayed"]):
             return MatchStatus.POSTPONED
         if any(kw in s_lower for kw in ["canc.", "cancelled", "canceled"]):
@@ -133,7 +117,6 @@ class BaseScraper(MatchScraper):
         if any(kw in s_lower for kw in ["awarded", "def.", "default"]):
             return MatchStatus.AWARDED
 
-        # SCHEDULED indicators (broader check after specific ones)
         scheduled_keywords = [
             "sched.", "scheduled", "not started", "upcoming", "soon",
             "today", "tomorrow", "vs", "v", "-", "tbd", "tba"
@@ -141,26 +124,22 @@ class BaseScraper(MatchScraper):
         if any(kw in s_lower for kw in scheduled_keywords):
             return MatchStatus.SCHEDULED
 
-        # If status is just empty space, dash, or very short
         if len(s_lower) <= 2 or s_lower in ["-", "vs", "v", ""]:
             return MatchStatus.SCHEDULED
 
-        # Score-based inference as backup
         if score_str:
             score_clean = score_str.strip()
             if score_clean and score_clean != "-" and score_clean != "0-0":
-                # If there's a meaningful score, probably live or finished
-                # Check if score looks complete (like 6-4 6-2)
                 score_parts = score_clean.split()
                 if len(score_parts) >= 2:
                     try:
-                        # If we can parse multiple sets, might be finished
                         sets_parsed = 0
                         for part in score_parts:
                             if '-' in part and len(part.split('-')) == 2:
                                 home, away = map(int, part.split('-'))
-                                if (home >= 6 and home - away >= 2) or (
-                                        away >= 6 and away - home >= 2) or home == 7 or away == 7:
+                                if (home >= 6 and home - away >= 2) or \
+                                   (away >= 6 and away - home >= 2) or \
+                                   home == 7 or away == 7:
                                     sets_parsed += 1
                         if sets_parsed >= 2:
                             return MatchStatus.FINISHED
@@ -168,17 +147,12 @@ class BaseScraper(MatchScraper):
                             return MatchStatus.LIVE
                     except (ValueError, IndexError):
                         pass
-
-                # Has score but not clearly finished
                 return MatchStatus.LIVE
             else:
                 return MatchStatus.SCHEDULED
 
-        # Default fallback based on common patterns
-        if len(s_lower) > 10:  # Long strings are often live commentary
+        if len(s_lower) > 10:
             return MatchStatus.LIVE
-
-        # Final fallback
         return MatchStatus.SCHEDULED
 
     def _create_match(self,
@@ -192,17 +166,10 @@ class BaseScraper(MatchScraper):
                       match_id: Optional[str] = None,
                       scheduled_time_utc: Optional[datetime] = None,
                       **kwargs) -> TennisMatch:
-        """
-        Helper to create a TennisMatch object.
-        Additional kwargs are stored in metadata.
-        """
         parsed_status = self._parse_match_status(status, score)
         parsed_score = self._parse_score(score)
-
-        # Allow passing Player objects or names
         home_p_obj = home_player if isinstance(home_player, Player) else Player(name=self._parse_player_name(home_player))
         away_p_obj = away_player if isinstance(away_player, Player) else Player(name=self._parse_player_name(away_player))
-
 
         return TennisMatch(
             home_player=home_p_obj,
@@ -212,19 +179,17 @@ class BaseScraper(MatchScraper):
             tournament=tournament.strip(),
             round_info=round_info.strip(),
             scheduled_time=scheduled_time_utc,
-            source="",  # Will be set by caller # This is tricky in a non-async helper
-                                                        # Better to set source explicitly when calling
+            source="",
             source_url=source_url,
             match_id=match_id,
             last_updated=datetime.utcnow(),
             metadata=kwargs
         )
 
-    async def scrape_with_retry(self, max_retries: Optional[int] = None) -> ScrapingResult:
-        """
-        Wraps the scrape_matches call with retry logic.
-        Individual scrapers should implement scrape_matches.
-        """
+    async def scrape_with_retry(self,
+                                max_retries: Optional[int] = None,
+                                progress_callback: Optional[Callable[[TennisMatch], Awaitable[None]]] = None
+                                ) -> ScrapingResult:
         retries = max_retries if max_retries is not None else self.max_retries
         source_name = await self.get_source_name()
         last_exception = None
@@ -232,23 +197,21 @@ class BaseScraper(MatchScraper):
         for attempt in range(retries + 1):
             try:
                 self.logger.info(f"Attempt {attempt + 1}/{retries + 1} to scrape {source_name}")
-                # scrape_matches should return a ScrapingResult
-                result = await self.scrape_matches()
+                result = await self.scrape_matches(progress_callback=progress_callback)
                 if result.success:
                     return result
                 else:
                     self.logger.warning(f"Scraping {source_name} failed on attempt {attempt + 1}: {result.error_message}")
-                    last_exception = Exception(result.error_message) # Store as an exception
+                    last_exception = Exception(result.error_message)
             except Exception as e:
                 self.logger.error(f"Exception during scrape attempt {attempt + 1} for {source_name}: {e}", exc_info=True)
                 last_exception = e
 
             if attempt < retries:
-                sleep_duration = self.delay_between_requests * (2 ** attempt) # Exponential backoff
+                sleep_duration = self.delay_between_requests * (2 ** attempt)
                 self.logger.info(f"Retrying {source_name} in {sleep_duration} seconds...")
                 await asyncio.sleep(sleep_duration)
 
-        # If all retries fail
         error_msg = f"All {retries + 1} attempts to scrape {source_name} failed."
         if last_exception:
             error_msg += f" Last error: {str(last_exception)}"
@@ -257,11 +220,12 @@ class BaseScraper(MatchScraper):
 
 
     @abstractmethod
-    async def scrape_matches(self) -> ScrapingResult:
+    async def scrape_matches(self, progress_callback: Optional[Callable[[TennisMatch], Awaitable[None]]] = None) -> ScrapingResult:
         """
         Abstract method for scraping matches.
         Must be implemented by subclasses.
         Should return a ScrapingResult object.
+        The progress_callback can be called with a TennisMatch object after each match is found.
         """
         pass
 

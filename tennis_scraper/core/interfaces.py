@@ -1,9 +1,6 @@
-"""Abstract interfaces for the tennis scraper system."""
-
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable, Awaitable
 
-# Forward reference for ScrapingResult if needed, or import directly
 from .models import TennisMatch, ScrapingResult
 
 
@@ -12,7 +9,6 @@ class MatchScraper(ABC):
 
     def __init__(self, config: Dict[str, Any]):
         self.config = config
-        # Ensure logger is available for all scrapers
         from ..utils.logging import get_logger
         self.logger = get_logger(f"{self.__class__.__module__}.{self.__class__.__name__}")
         self.delay_between_requests = config.get('delay_between_requests', 1)
@@ -24,7 +20,7 @@ class MatchScraper(ABC):
         pass
 
     @abstractmethod
-    async def scrape_matches(self) -> ScrapingResult: # Changed to ScrapingResult
+    async def scrape_matches(self, progress_callback: Optional[Callable[[TennisMatch], Awaitable[None]]] = None) -> ScrapingResult:
         """Scrape matches from this source and return a ScrapingResult."""
         pass
 
@@ -75,7 +71,7 @@ class UpdateChecker(ABC):
     """Abstract base class for update checkers."""
 
     @abstractmethod
-    async def check_for_updates(self) -> Optional[Any]: # Return type can be an UpdateInfo object
+    async def check_for_updates(self) -> Optional[Any]:
         """Check for updates."""
         pass
 
