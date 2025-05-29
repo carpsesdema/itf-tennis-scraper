@@ -417,6 +417,22 @@ class FlashscoreScraper(BaseScraper):
             # Wait for content to load
             await page.wait_for_timeout(8000)
 
+            # SCROLL DOWN TO FIND ITF MATCHES - they're way down the page!
+            self.logger.info("📜 Scrolling down to find ITF matches...")
+            for scroll_attempt in range(10):  # Try scrolling 10 times
+                await page.evaluate("window.scrollBy(0, 1000)")  # Scroll down 1000px
+                await page.wait_for_timeout(1000)  # Wait 1 second between scrolls
+
+                # Check if we can find ITF text
+                itf_elements = await page.query_selector_all("*:has-text('ITF')")
+                self.logger.info(f"📜 Scroll {scroll_attempt + 1}: Found {len(itf_elements)} elements with 'ITF'")
+
+                if len(itf_elements) > 0:
+                    self.logger.info("✅ Found ITF section after scrolling!")
+                    break
+            else:
+                self.logger.warning("⚠️ Couldn't find ITF section after scrolling")
+
             # Get match elements with CORRECT selectors for main page
             self.logger.info(f"🔍 Looking for match elements on main tennis page...")
 
