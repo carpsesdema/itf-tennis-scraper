@@ -43,7 +43,9 @@ class TennisScraperApp:
 
             # Setup auto-update check if enabled
             if self.config.updates.check_on_startup:
-                QTimer.singleShot(3000, self._check_for_updates)
+                # QTimer.singleShot(3000, self._check_for_updates) # <--- MODIFIED: Commented out this line
+                self.logger.info("GitHub update check on startup has been DISABLED in app.py for this build.")
+
 
             # Connect shutdown handler
             self.qt_app.aboutToQuit.connect(self._on_shutdown)
