@@ -110,4 +110,4 @@ dmypy.json
 
 # Screenshots and Test Output
 screenshots/
-test_output/
+test_output/!/ITF_Scraper.iss

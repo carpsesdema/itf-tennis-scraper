@@ -1,4 +1,4 @@
-"""Flashscore scraper implementation using Playwright with FIXED bet365 detection."""
+"""Flashscore scraper implementation using Playwright with ENHANCED tie break detection."""
 
 import asyncio
 import re
@@ -60,9 +60,13 @@ class FlashscoreLiveTabClicker:
         try:
             live_selectors = [
                 "text=LIVE",
+                "text=Live",
                 "[data-testid*='live']",
                 ".filters__text--short:text('LIVE')",
-                "*:has-text('LIVE')"
+                "*:has-text('LIVE')",
+                "a:has-text('LIVE')",
+                "div:has-text('LIVE')",
+                "span:has-text('LIVE')"
             ]
 
             for selector in live_selectors:
@@ -106,7 +110,9 @@ class FlashscoreLiveTabClicker:
                 "//button[contains(text(), 'LIVE')]",
                 "//a[contains(text(), 'LIVE')]",
                 "//*[contains(@class, 'filter') and contains(text(), 'LIVE')]",
-                "//*[contains(@class, 'tab') and contains(text(), 'LIVE')]"
+                "//*[contains(@class, 'tab') and contains(text(), 'LIVE')]",
+                "//div[text()='LIVE']",
+                "//a[text()='LIVE']"
             ]
 
             for xpath in xpath_selectors:
@@ -183,7 +189,8 @@ class FlashscoreLiveTabClicker:
                     if (node.textContent && node.textContent.includes('LIVE')) {
                         const classes = node.className || '';
                         if (classes.includes('tab') || classes.includes('filter') || 
-                            classes.includes('button') || node.tagName === 'BUTTON') {
+                            classes.includes('button') || node.tagName === 'BUTTON' ||
+                            node.tagName === 'A') {
                             node.click();
                             return true;
                         }
@@ -326,6 +333,322 @@ class FlashscoreScraper(BaseScraper):
             self.logger.error(f"💥 Unexpected error during LIVE tab clicking: {e}")
             return False
 
+    async def _debug_page_content(self, page: Page):
+        """Debug function to analyze page content and structure."""
+        self.logger.info("🔍 DEBUGGING PAGE CONTENT...")
+
+        try:
+            # Check current URL
+            current_url = page.url
+            self.logger.info(f"Current URL: {current_url}")
+
+            # Check for ITF matches in page content
+            page_content = await page.content()
+            itf_mentions = page_content.lower().count('itf')
+            self.logger.info(f"ITF mentions in page: {itf_mentions}")
+
+            # Look for match containers with various selectors
+            match_selectors = [
+                "div[class*='event__match']",
+                "div[class*='event']",
+                ".event",
+                "[id*='g_']",
+                "div[class*='match']",
+                ".match"
+            ]
+
+            for selector in match_selectors:
+                try:
+                    elements = await page.query_selector_all(selector)
+                    self.logger.info(f"Found {len(elements)} elements with selector '{selector}'")
+
+                    # Sample first few elements
+                    for i, element in enumerate(elements[:3]):
+                        try:
+                            text = await element.text_content()
+                            class_attr = await element.get_attribute("class")
+                            id_attr = await element.get_attribute("id")
+                            self.logger.info(
+                                f"  Element {i}: class='{class_attr}', id='{id_attr}', text='{text[:100] if text else 'None'}'")
+                        except:
+                            pass
+                except:
+                    pass
+
+            # Look for bet365 indicators with expanded selectors
+            bet365_selectors = [
+                "div.liveBetWrapper",
+                "[data-bookmaker-id]",
+                "[class*='bet']",
+                "[class*='odds']",
+                "img[alt*='bet365']",
+                "a[href*='bet365']"
+            ]
+
+            for selector in bet365_selectors:
+                try:
+                    elements = await page.query_selector_all(selector)
+                    self.logger.info(f"Found {len(elements)} bet365-related elements with selector '{selector}'")
+
+                    for i, element in enumerate(elements[:5]):
+                        try:
+                            attrs = {}
+                            for attr in ['data-bookmaker-id', 'class', 'href', 'alt']:
+                                val = await element.get_attribute(attr)
+                                if val:
+                                    attrs[attr] = val
+                            self.logger.info(f"  Bet365 element {i}: {attrs}")
+                        except:
+                            pass
+                except:
+                    pass
+
+        except Exception as e:
+            self.logger.error(f"Error during page debugging: {e}")
+
+    async def _detect_match_tie_break_comprehensive(self, sel_element: ElementHandle, status_text: str, score_str: str,
+                                                    home_player_name: str, away_player_name: str) -> tuple[bool, str]:
+        """
+        COMPREHENSIVE match tie break detection - checks multiple sources.
+        Returns (is_tie_break, detection_method)
+        """
+        tie_break_keywords = self.config.get('flashscore_match_tie_break_keywords', [
+            "match tie break", "match tie-break", "match tb", "super tiebreak",
+            "super tie-break", "mtb", "stb", "first to 10", "race to 10",
+            "match tiebreak", "supertiebreak", "super tb", "match-tb",
+            "deciding tb", "final tb", "championship tb"
+        ])
+
+        detection_methods = []
+
+        # METHOD 1: Status text keyword matching (original)
+        if status_text:
+            status_lower = status_text.lower()
+            for keyword in tie_break_keywords:
+                if keyword.lower() in status_lower:
+                    detection_methods.append(f"status_text: '{keyword}' found in '{status_text}'")
+                    self.logger.critical(
+                        f"🚨 TIE BREAK DETECTED via STATUS: {home_player_name} vs {away_player_name} - '{keyword}' in '{status_text}'")
+                    return True, f"status_keyword_{keyword}"
+
+        # METHOD 2: Score analysis - look for tie break score patterns
+        if score_str:
+            # Pattern 1: Brackets indicate tie break scores [10-8], [15-13], etc.
+            bracket_pattern = r'\[(\d+)-(\d+)\]'
+            bracket_matches = re.findall(bracket_pattern, score_str)
+            if bracket_matches:
+                for home_tb, away_tb in bracket_matches:
+                    home_tb_int, away_tb_int = int(home_tb), int(away_tb)
+                    # Match tie breaks are typically first to 10 (must win by 2)
+                    if (home_tb_int >= 10 or away_tb_int >= 10) and abs(home_tb_int - away_tb_int) >= 2:
+                        detection_methods.append(f"score_bracket: [{home_tb}-{away_tb}] indicates match tie break")
+                        self.logger.critical(
+                            f"🚨 TIE BREAK DETECTED via SCORE BRACKET: {home_player_name} vs {away_player_name} - [{home_tb}-{away_tb}]")
+                        return True, f"score_bracket_{home_tb}_{away_tb}"
+
+            # Pattern 2: Current score analysis - if sets are tied and we're in a long tie break
+            # Example: "6-4 4-6 12-10" could indicate a match tie break in progress
+            score_parts = score_str.split()
+            if len(score_parts) >= 2:
+                try:
+                    # Check if sets are even and last set has high scores
+                    sets_won_home = sets_won_away = 0
+                    last_set_home = last_set_away = 0
+
+                    for part in score_parts:
+                        if '-' in part:
+                            home_games, away_games = map(int, part.split('-'))
+                            if home_games > away_games:
+                                sets_won_home += 1
+                            elif away_games > home_games:
+                                sets_won_away += 1
+                            last_set_home, last_set_away = home_games, away_games
+
+                    # If sets are tied and current "set" has scores ≥10, likely a match tie break
+                    if (sets_won_home == sets_won_away and
+                            (last_set_home >= 10 or last_set_away >= 10)):
+                        detection_methods.append(
+                            f"score_analysis: Sets tied {sets_won_home}-{sets_won_away}, current: {last_set_home}-{last_set_away}")
+                        self.logger.critical(
+                            f"🚨 TIE BREAK DETECTED via SCORE ANALYSIS: {home_player_name} vs {away_player_name} - Sets {sets_won_home}-{sets_won_away}, TB: {last_set_home}-{last_set_away}")
+                        return True, f"score_analysis_sets_tied_{last_set_home}_{last_set_away}"
+
+                except (ValueError, IndexError):
+                    pass  # Skip if score parsing fails
+
+        # METHOD 3: Element HTML content analysis
+        try:
+            element_html = await sel_element.inner_html()
+            element_html_lower = element_html.lower()
+
+            # Look for tie break indicators in HTML
+            html_tie_break_indicators = [
+                "match tie", "match tb", "super tie", "mtb", "stb",
+                "first to 10", "race to 10", "deciding tb", "final tb"
+            ]
+
+            for indicator in html_tie_break_indicators:
+                if indicator in element_html_lower:
+                    detection_methods.append(f"html_content: '{indicator}' found in element HTML")
+                    self.logger.critical(
+                        f"🚨 TIE BREAK DETECTED via HTML: {home_player_name} vs {away_player_name} - '{indicator}' in HTML")
+                    return True, f"html_content_{indicator.replace(' ', '_')}"
+
+            # Look for specific CSS classes that might indicate tie breaks
+            tie_break_classes = [
+                "tiebreak", "tie-break", "match-tb", "super-tb", "mtb", "stb"
+            ]
+
+            for cls in tie_break_classes:
+                if f'class="{cls}"' in element_html_lower or f"class='{cls}'" in element_html_lower:
+                    detection_methods.append(f"css_class: '{cls}' found in element")
+                    self.logger.critical(
+                        f"🚨 TIE BREAK DETECTED via CSS CLASS: {home_player_name} vs {away_player_name} - class '{cls}'")
+                    return True, f"css_class_{cls}"
+
+        except Exception as e:
+            self.logger.debug(f"HTML analysis failed for tie break detection: {e}")
+
+        # METHOD 4: Text content analysis (broader than just status)
+        try:
+            full_text = await sel_element.text_content()
+            if full_text:
+                full_text_lower = full_text.lower()
+                for keyword in tie_break_keywords:
+                    if keyword.lower() in full_text_lower:
+                        detection_methods.append(f"full_text: '{keyword}' found in element text")
+                        self.logger.critical(
+                            f"🚨 TIE BREAK DETECTED via FULL TEXT: {home_player_name} vs {away_player_name} - '{keyword}' in text")
+                        return True, f"full_text_{keyword.replace(' ', '_')}"
+        except Exception as e:
+            self.logger.debug(f"Full text analysis failed for tie break detection: {e}")
+
+        # METHOD 5: Check for specific numeric patterns that indicate match tie breaks
+        # Look for scores like "10-8", "12-10", "15-13" which are common in match tie breaks
+        all_text = f"{status_text} {score_str}".lower()
+        tie_break_score_patterns = [
+            r'\b(1[0-9])-([8-9]|1[0-9])\b',  # 10-8, 11-9, 12-10, etc.
+            r'\b([8-9]|1[0-9])-(1[0-9])\b',  # 8-10, 9-11, 10-12, etc.
+        ]
+
+        for pattern in tie_break_score_patterns:
+            matches = re.findall(pattern, all_text)
+            if matches:
+                for match in matches:
+                    score1, score2 = int(match[0]), int(match[1])
+                    # Match tie break scoring: first to 10, must win by 2
+                    if (score1 >= 10 or score2 >= 10) and abs(score1 - score2) >= 1:
+                        detection_methods.append(f"score_pattern: {score1}-{score2} matches tie break pattern")
+                        self.logger.critical(
+                            f"🚨 TIE BREAK DETECTED via SCORE PATTERN: {home_player_name} vs {away_player_name} - {score1}-{score2}")
+                        return True, f"score_pattern_{score1}_{score2}"
+
+        # Log detection attempts for debugging
+        if detection_methods:
+            self.logger.debug(
+                f"Tie break detection methods tried for {home_player_name} vs {away_player_name}: {detection_methods}")
+
+        return False, "none"
+
+    async def _enhanced_match_processing(self, sel_element: ElementHandle, element_index: int,
+                                         bookmaker_id_to_check: str) -> Optional[TennisMatch]:
+        """Enhanced match processing with comprehensive tie break detection."""
+        try:
+            # Extract player names with multiple selectors
+            home_selectors = [".event__participant--home", "[class*='home']", "[class*='participant']:nth-child(1)"]
+            away_selectors = [".event__participant--away", "[class*='away']", "[class*='participant']:nth-child(2)"]
+
+            home_player_name = await self._get_text_from_selectors(sel_element, home_selectors)
+            away_player_name = await self._get_text_from_selectors(sel_element, away_selectors)
+
+            if not home_player_name or not away_player_name:
+                self.logger.debug(f"Skipping match {element_index} - missing player names")
+                return None
+
+            # Extract scores and status
+            score_selectors = [".event__score--home", "[class*='score']:nth-child(1)"]
+            home_score = await self._get_text_from_selectors(sel_element, score_selectors)
+
+            score_selectors = [".event__score--away", "[class*='score']:nth-child(2)"]
+            away_score = await self._get_text_from_selectors(sel_element, score_selectors)
+
+            score_str = f"{home_score}-{away_score}" if home_score and away_score else ""
+
+            status_selectors = [".event__stage", ".event__time", "[class*='status']", "[class*='time']"]
+            status_text = await self._get_text_from_selectors(sel_element, status_selectors, default="")
+
+            # COMPREHENSIVE TIE BREAK DETECTION
+            is_match_tie_break, detection_method = await self._detect_match_tie_break_comprehensive(
+                sel_element, status_text, score_str, home_player_name, away_player_name
+            )
+
+            # Extract match ID
+            match_id_raw = await sel_element.get_attribute("id")
+            match_id = self._generate_match_id(match_id_raw, element_index, home_player_name, away_player_name)
+
+            # Create metadata with enhanced tie break info
+            metadata_dict = {
+                'flashscore_raw_id': match_id_raw or f"index_{element_index}",
+                'has_bet365_indicator': True,
+                'is_match_tie_break': is_match_tie_break,
+                'tie_break_detection_method': detection_method,
+                'bet365_bookmaker_id': bookmaker_id_to_check,
+                'element_index': element_index,
+                'raw_status_text': status_text,
+                'raw_score_text': score_str,
+                'detection_strategy': 'comprehensive_tie_break_v2'
+            }
+
+            # Create match object
+            tournament_name = "ITF Men Singles"
+            tournament_level = self._determine_tournament_level_flashscore(tournament_name)
+            source_name = await self.get_source_name()
+
+            match_obj = TennisMatch(
+                home_player=Player(name=self._parse_player_name(home_player_name)),
+                away_player=Player(name=self._parse_player_name(away_player_name)),
+                score=Score.from_string(score_str),
+                status=self._parse_match_status(status_text, score_str),
+                tournament=tournament_name,
+                tournament_level=tournament_level,
+                surface=Surface.UNKNOWN,
+                source=source_name,
+                source_url="",  # Will be set by caller
+                match_id=match_id,
+                scheduled_time=None,
+                last_updated=datetime.now(timezone.utc),
+                metadata=metadata_dict
+            )
+
+            # CRITICAL ALERT for tie breaks
+            if is_match_tie_break:
+                self.logger.critical(f"🚨🚨🚨 MATCH TIE BREAK ALERT 🚨🚨🚨")
+                self.logger.critical(f"MATCH: {home_player_name} vs {away_player_name}")
+                self.logger.critical(f"SCORE: {score_str}")
+                self.logger.critical(f"STATUS: {status_text}")
+                self.logger.critical(f"DETECTION: {detection_method}")
+                self.logger.critical(f"🚨🚨🚨 END TIE BREAK ALERT 🚨🚨🚨")
+
+            return match_obj
+
+        except Exception as e:
+            self.logger.error(f"Enhanced match processing failed for element {element_index}: {e}", exc_info=True)
+            return None
+
+    def _generate_match_id(self, match_id_raw: str, element_index: int, home_player: str, away_player: str) -> str:
+        """Generate a consistent match ID."""
+        if match_id_raw:
+            id_match = re.search(r'g_\d_([a-zA-Z0-9]+)', match_id_raw)
+            if id_match:
+                return f"flashscore_{id_match.group(1)}"
+            else:
+                id_part_match = re.search(r'([a-zA-Z0-9_-]+)$', match_id_raw)
+                if id_part_match:
+                    return f"flashscore_{id_part_match.group(1)}"
+
+        # Fallback ID
+        return f"flashscore_bet365_{element_index}_{home_player[:3]}_{away_player[:3]}"
+
     async def scrape_matches(self) -> ScrapingResult:
         start_time_dt = datetime.now(timezone.utc)
         matches_found: List[TennisMatch] = []
@@ -352,7 +675,6 @@ class FlashscoreScraper(BaseScraper):
 
         self.logger.info(f"Flashscore: Looking for bet365 matches with bookmaker-id='{bookmaker_id_to_check}'")
 
-        match_tie_break_keywords = self.config.get('flashscore_match_tie_break_keywords', [])
         headless_mode = self.config.get('headless_browser', True)
         user_agent_new = self.config.get('user_agent',
                                          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36')
@@ -419,153 +741,166 @@ class FlashscoreScraper(BaseScraper):
             except Exception as e_cookie:
                 self.logger.warning(f"Cookie button interaction error: {e_cookie}")
 
+            # DEBUG: Analyze page before clicking LIVE tab
+            await self._debug_page_content(page)
+
             # Click the LIVE tab with robust method
             live_tab_success = await self._click_live_tab_robust(page)
             if not live_tab_success:
                 self.logger.error("Failed to click LIVE tab - proceeding anyway but results may be limited")
 
-            # Wait for matches to load
+            # DEBUG: Analyze page after clicking LIVE tab
+            self.logger.info("🔍 PAGE CONTENT AFTER LIVE TAB CLICK...")
+            await self._debug_page_content(page)
+
+            # Try scrolling down to load more matches
+            self.logger.info("📜 Scrolling to load more matches...")
+            for i in range(3):
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await page.wait_for_timeout(2000)
+                self.logger.info(f"Scroll {i + 1}/3 completed")
+
+            # Wait for matches to load with multiple selector attempts
             self.logger.debug("Waiting for match containers...")
-            match_container_selector = "div[class*='event__match']"
+            match_container_selectors = [
+                "div[class*='event__match']",
+                "div[class*='event']",
+                ".event",
+                "[id*='g_']"
+            ]
+
             match_elements: List[ElementHandle] = []
 
-            try:
-                await page.wait_for_selector(match_container_selector, state="attached", timeout=element_timeout_ms)
-                match_elements = await page.query_selector_all(match_container_selector)
-                self.logger.info(
-                    f"Found {len(match_elements)} potential matches using selector: {match_container_selector}")
-            except PlaywrightTimeoutError:
-                self.logger.error(f"Match container selector ('{match_container_selector}') timed out")
-                success = True  # Don't fail completely, just return empty results
-                error_message = f"No match elements found using selector: {match_container_selector}"
+            for selector in match_container_selectors:
+                try:
+                    await page.wait_for_selector(selector, state="attached", timeout=10000)
+                    elements = await page.query_selector_all(selector)
+                    self.logger.info(f"Found {len(elements)} potential matches using selector: {selector}")
+                    if elements:
+                        match_elements = elements
+                        break
+                except PlaywrightTimeoutError:
+                    self.logger.debug(f"Selector '{selector}' timed out")
+                    continue
 
             if not match_elements:
-                self.logger.warning("No match elements found on page to process.")
+                self.logger.warning("No match elements found with any selector - trying fallback approach")
+                # Fallback: get all divs and filter by content
+                all_divs = await page.query_selector_all("div")
+                for div in all_divs:
+                    try:
+                        text = await div.text_content()
+                        if text and any(word in text.lower() for word in ['vs', 'set', 'game']):
+                            match_elements.append(div)
+                    except:
+                        continue
+                self.logger.info(f"Fallback approach found {len(match_elements)} potential match elements")
 
             processed_elements_count = len(match_elements)
 
-            # Process each match element
+            # Process each match element with ENHANCED TIE BREAK DETECTION
             bet365_matches_found = 0
             total_bet_wrappers_found = 0
 
             for element_index, sel_element in enumerate(match_elements):
                 try:
-                    # Extract player names
-                    home_player_name = await self._get_text_from_selectors(sel_element, [".event__participant--home"])
-                    away_player_name = await self._get_text_from_selectors(sel_element, [".event__participant--away"])
-
-                    if not home_player_name or not away_player_name:
-                        self.logger.debug(f"Skipping match {element_index} - missing player names")
-                        continue
-
-                    # FIXED BET365 DETECTION - Check for liveBetWrapper with correct bookmaker ID
+                    # ENHANCED BET365 DETECTION (existing logic)
                     has_bet365_indicator = False
                     debug_info = []
 
+                    # Strategy 1: Original liveBetWrapper approach
                     try:
-                        # Look for liveBetWrapper elements in this match
                         bet_wrappers = await sel_element.query_selector_all("div.liveBetWrapper")
                         total_bet_wrappers_found += len(bet_wrappers)
 
                         if bet_wrappers:
                             debug_info.append(f"Found {len(bet_wrappers)} liveBetWrapper elements")
-
                             for wrapper in bet_wrappers:
                                 bookmaker_id = await wrapper.get_attribute("data-bookmaker-id")
                                 debug_info.append(f"  Bookmaker ID: {bookmaker_id}")
-
                                 if bookmaker_id == bookmaker_id_to_check:
                                     has_bet365_indicator = True
-                                    debug_info.append(f"  ✅ MATCH! Found bet365")
+                                    debug_info.append(f"  ✅ MATCH! Found bet365 via liveBetWrapper")
                                     break
-                        else:
-                            debug_info.append("No liveBetWrapper elements found")
-
                     except Exception as e:
-                        debug_info.append(f"Error during bet365 check: {e}")
+                        debug_info.append(f"liveBetWrapper strategy failed: {e}")
 
-                    # Log debug info for first few matches or when bet365 is found
-                    if element_index < 3 or has_bet365_indicator:
-                        match_info = f"{home_player_name} vs {away_player_name}"
-                        self.logger.info(f"🔍 Match {element_index + 1}: {match_info}")
-                        for info in debug_info:
-                            self.logger.info(f"    {info}")
-
+                    # Strategy 2: Look for any bet365 indicators in the match element
                     if not has_bet365_indicator:
-                        continue  # Skip matches without bet365 indicator
+                        try:
+                            # Check for bet365 in text content
+                            element_html = await sel_element.inner_html()
+                            if '549' in element_html or 'bet365' in element_html.lower():
+                                has_bet365_indicator = True
+                                debug_info.append("✅ MATCH! Found bet365 via HTML content")
 
-                    bet365_matches_found += 1
-                    self.logger.info(
-                        f"🎯 BET365 MATCH #{bet365_matches_found}: {home_player_name} vs {away_player_name}")
+                            # Check for data attributes containing bet365 reference
+                            all_attrs = await page.evaluate("""
+                                (element) => {
+                                    const attrs = {};
+                                    for (let attr of element.attributes) {
+                                        attrs[attr.name] = attr.value;
+                                    }
+                                    return attrs;
+                                }
+                            """, sel_element)
 
-                    # Extract match details
-                    home_score = await self._get_text_from_selectors(sel_element, [".event__score--home"])
-                    away_score = await self._get_text_from_selectors(sel_element, [".event__score--away"])
-                    score_str = f"{home_score}-{away_score}" if home_score and away_score else ""
+                            for attr_name, attr_value in all_attrs.items():
+                                if '549' in str(attr_value) or 'bet365' in str(attr_value).lower():
+                                    has_bet365_indicator = True
+                                    debug_info.append(f"✅ MATCH! Found bet365 via attribute {attr_name}={attr_value}")
+                                    break
 
-                    status_text = await self._get_text_from_selectors(sel_element,
-                                                                      [".event__stage", ".event__time"],
-                                                                      default="Scheduled")
+                        except Exception as e:
+                            debug_info.append(f"HTML content strategy failed: {e}")
 
-                    # Extract match ID
-                    match_id_raw = await sel_element.get_attribute("id")
-                    id_part_from_raw = ""
-                    if match_id_raw:
-                        id_match = re.search(r'g_\d_([a-zA-Z0-9]+)', match_id_raw)
-                        if id_match:
-                            id_part_from_raw = id_match.group(1)
+                    # Strategy 3: Check parent elements for bet365 indicators
+                    if not has_bet365_indicator:
+                        try:
+                            parent = await sel_element.query_selector("xpath=..")
+                            if parent:
+                                parent_html = await parent.inner_html()
+                                if '549' in parent_html or 'bet365' in parent_html.lower():
+                                    has_bet365_indicator = True
+                                    debug_info.append("✅ MATCH! Found bet365 via parent element")
+                        except Exception as e:
+                            debug_info.append(f"Parent element strategy failed: {e}")
+
+                    # Skip if no bet365 indicator
+                    if not has_bet365_indicator:
+                        if element_index < 3:  # Only log first few for debugging
+                            self.logger.debug(f"Skipping match {element_index} - no bet365 indicator")
+                        continue
+
+                    # PROCESS MATCH WITH ENHANCED TIE BREAK DETECTION
+                    match_obj = await self._enhanced_match_processing(sel_element, element_index, bookmaker_id_to_check)
+
+                    if match_obj:
+                        bet365_matches_found += 1
+                        matches_found.append(match_obj)
+
+                        # Set the source URL
+                        match_obj.source_url = page.url
+
+                        # EXTRA LOUD ALERTS FOR TIE BREAKS
+                        if match_obj.metadata.get('is_match_tie_break'):
+                            self.logger.critical("=" * 80)
+                            self.logger.critical(f"🚨 CRITICAL ALERT: MATCH TIE BREAK DETECTED 🚨")
+                            self.logger.critical(
+                                f"PLAYERS: {match_obj.home_player.name} vs {match_obj.away_player.name}")
+                            self.logger.critical(f"TOURNAMENT: {match_obj.tournament}")
+                            self.logger.critical(f"SCORE: {match_obj.display_score}")
+                            self.logger.critical(f"STATUS: {match_obj.metadata.get('raw_status_text', 'Unknown')}")
+                            self.logger.critical(
+                                f"DETECTION METHOD: {match_obj.metadata.get('tie_break_detection_method', 'Unknown')}")
+                            self.logger.critical(f"MATCH ID: {match_obj.match_id}")
+                            self.logger.critical(f"SOURCE URL: {match_obj.source_url}")
+                            self.logger.critical("=" * 80)
+
+                        # Regular bet365 match logging
                         else:
-                            id_part_match_generic = re.search(r'([a-zA-Z0-9_-]+)$', match_id_raw)
-                            id_part_from_raw = id_part_match_generic.group(1) if id_part_match_generic else match_id_raw
-
-                    if id_part_from_raw:
-                        match_id = f"flashscore_{id_part_from_raw}"
-                    else:
-                        match_id = f"flashscore_bet365_{element_index}_{home_player_name[:3]}_{away_player_name[:3]}"
-                        self.logger.warning(
-                            f"Using fallback ID for {home_player_name} vs {away_player_name}: {match_id}")
-
-                    # Check for match tie break
-                    is_match_tie_break = False
-                    if status_text and match_tie_break_keywords:
-                        status_lower = status_text.lower()
-                        for keyword in match_tie_break_keywords:
-                            if keyword.lower() in status_lower:
-                                is_match_tie_break = True
-                                self.logger.info(
-                                    f"🚨 TIE BREAK DETECTED: {home_player_name} vs {away_player_name} - '{keyword}' found in status")
-                                break
-
-                    # Create metadata
-                    metadata_dict = {
-                        'flashscore_raw_id': match_id_raw or f"index_{element_index}",
-                        'has_bet365_indicator': True,
-                        'is_match_tie_break': is_match_tie_break,
-                        'bet365_bookmaker_id': bookmaker_id_to_check,
-                        'element_index': element_index
-                    }
-
-                    # Create match object
-                    tournament_name = "ITF Men Singles"
-                    tournament_level = self._determine_tournament_level_flashscore(tournament_name)
-
-                    match_obj = TennisMatch(
-                        home_player=Player(name=self._parse_player_name(home_player_name)),
-                        away_player=Player(name=self._parse_player_name(away_player_name)),
-                        score=Score.from_string(score_str),
-                        status=self._parse_match_status(status_text, score_str),
-                        tournament=tournament_name,
-                        tournament_level=tournament_level,
-                        surface=Surface.UNKNOWN,
-                        source=source_name,
-                        source_url=page.url,
-                        match_id=match_id,
-                        scheduled_time=None,
-                        last_updated=datetime.now(timezone.utc),
-                        metadata=metadata_dict
-                    )
-
-                    matches_found.append(match_obj)
+                            self.logger.info(
+                                f"🎯 BET365 MATCH #{bet365_matches_found}: {match_obj.home_player.name} vs {match_obj.away_player.name}")
 
                 except Exception as e_extract:
                     self.logger.warning(f"Extraction error for match (idx {element_index}): {e_extract}", exc_info=True)
