@@ -77,38 +77,109 @@ class BaseScraper(MatchScraper):
 
     def _parse_match_status(self, status_str: Optional[str], score_str: Optional[str] = None) -> MatchStatus:
         """
-        Determines match status from a status string.
-        Can be made more robust with source-specific keywords.
+        IMPROVED match status parsing with better logic.
         """
         if not status_str:
-            return MatchStatus.UNKNOWN
-
-        s_lower = status_str.lower()
-
-        if any(kw in s_lower for kw in ["live", "progress", "playing", "break", "game", "set", "'"]): # ' for current game time
-            return MatchStatus.LIVE
-        if any(kw in s_lower for kw in ["fin.", "finished", "completed", "ended", "full time"]):
-            return MatchStatus.FINISHED
-        if any(kw in s_lower for kw in ["sched.", "scheduled", "not started", "upcoming"]):
+            # If no status but there's a score, try to infer
+            if score_str and score_str.strip() and score_str != "-":
+                return MatchStatus.LIVE
             return MatchStatus.SCHEDULED
+
+        s_lower = status_str.lower().strip()
+
+        # Remove common prefixes/suffixes that might interfere
+        s_lower = s_lower.replace("'", "").replace('"', '')
+
+        # FINISHED indicators (check first - most specific)
+        finished_keywords = [
+            "fin.", "finished", "completed", "ended", "full time", "ft",
+            "final", "result", "won", "lost", "victory", "defeat"
+        ]
+        if any(kw in s_lower for kw in finished_keywords):
+            return MatchStatus.FINISHED
+
+        # LIVE indicators (very specific)
+        live_keywords = [
+            "live", "playing", "in progress", "ongoing", "current",
+            "1st set", "2nd set", "3rd set", "4th set", "5th set",
+            "break", "serving", "match point", "set point", "game point",
+            "deuce", "advantage", "ad", "break point"
+        ]
+        if any(kw in s_lower for kw in live_keywords):
+            return MatchStatus.LIVE
+
+        # Time-based indicators (usually scheduled)
+        time_patterns = [
+            r'\d{1,2}:\d{2}',  # 14:30, 9:45, etc.
+            r'\d{1,2}h\d{2}',  # 14h30
+            r'\d{1,2}\.\d{2}',  # 14.30
+        ]
+        import re
+        for pattern in time_patterns:
+            if re.search(pattern, s_lower):
+                return MatchStatus.SCHEDULED
+
+        # OTHER specific statuses
         if any(kw in s_lower for kw in ["postp.", "postponed", "delayed"]):
             return MatchStatus.POSTPONED
         if any(kw in s_lower for kw in ["canc.", "cancelled", "canceled"]):
             return MatchStatus.CANCELLED
-        if any(kw in s_lower for kw in ["walkover", "w.o.", "w/o"]):
+        if any(kw in s_lower for kw in ["walkover", "w.o.", "w/o", "wo"]):
             return MatchStatus.WALKOVER
-        if any(kw in s_lower for kw in ["retired", "ret."]):
+        if any(kw in s_lower for kw in ["retired", "ret.", "retirement"]):
             return MatchStatus.RETIRED
-        if any(kw in s_lower for kw in ["interrupted", "susp.", "suspended"]):
+        if any(kw in s_lower for kw in ["interrupted", "susp.", "suspended", "rain", "weather"]):
             return MatchStatus.INTERRUPTED
-        if any(kw in s_lower for kw in ["awarded"]):
+        if any(kw in s_lower for kw in ["awarded", "def.", "default"]):
             return MatchStatus.AWARDED
 
-        # Infer from score if status is ambiguous
-        if score_str and any(char.isdigit() for char in score_str):
-            return MatchStatus.LIVE # If there's a score, it's likely live or recently finished
+        # SCHEDULED indicators (broader check after specific ones)
+        scheduled_keywords = [
+            "sched.", "scheduled", "not started", "upcoming", "soon",
+            "today", "tomorrow", "vs", "v", "-", "tbd", "tba"
+        ]
+        if any(kw in s_lower for kw in scheduled_keywords):
+            return MatchStatus.SCHEDULED
 
-        return MatchStatus.SCHEDULED # Default to scheduled if unsure
+        # If status is just empty space, dash, or very short
+        if len(s_lower) <= 2 or s_lower in ["-", "vs", "v", ""]:
+            return MatchStatus.SCHEDULED
+
+        # Score-based inference as backup
+        if score_str:
+            score_clean = score_str.strip()
+            if score_clean and score_clean != "-" and score_clean != "0-0":
+                # If there's a meaningful score, probably live or finished
+                # Check if score looks complete (like 6-4 6-2)
+                score_parts = score_clean.split()
+                if len(score_parts) >= 2:
+                    try:
+                        # If we can parse multiple sets, might be finished
+                        sets_parsed = 0
+                        for part in score_parts:
+                            if '-' in part and len(part.split('-')) == 2:
+                                home, away = map(int, part.split('-'))
+                                if (home >= 6 and home - away >= 2) or (
+                                        away >= 6 and away - home >= 2) or home == 7 or away == 7:
+                                    sets_parsed += 1
+                        if sets_parsed >= 2:
+                            return MatchStatus.FINISHED
+                        elif sets_parsed >= 1:
+                            return MatchStatus.LIVE
+                    except (ValueError, IndexError):
+                        pass
+
+                # Has score but not clearly finished
+                return MatchStatus.LIVE
+            else:
+                return MatchStatus.SCHEDULED
+
+        # Default fallback based on common patterns
+        if len(s_lower) > 10:  # Long strings are often live commentary
+            return MatchStatus.LIVE
+
+        # Final fallback
+        return MatchStatus.SCHEDULED
 
     def _create_match(self,
                       home_player: str,

@@ -1,5 +1,5 @@
 """
-MatchesTable component for displaying tennis match data.
+MatchesTable component for displaying tennis match data with IMPROVED COLORS.
 """
 
 from PySide6.QtWidgets import QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView
@@ -51,9 +51,6 @@ class MatchesTable(QTableWidget):
         header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)  # Source
         header.setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)  # Last Updated
 
-        # Further styling can be applied via the theme system
-        # self.setStyleSheet("QTableWidget { gridline-color: #404040; }") # Example
-
     def update_matches(self, matches: List[TennisMatch]):
         """
         Clears and repopulates the table with new match data.
@@ -96,20 +93,44 @@ class MatchesTable(QTableWidget):
         self.setItem(row_idx, 6, source_item)
         self.setItem(row_idx, 7, last_updated_item)
 
-        # Apply styling for live matches
-        if match.status == MatchStatus.LIVE:
-            live_color = QColor(Qt.GlobalColor.red).lighter(180)  # A light red/pinkish
+        # IMPROVED STYLING - Much easier on the eyes!
+        if match.metadata.get('is_match_tie_break'):
+            # BRIGHT ALERT for tie breaks - this is the money maker!
+            tie_break_color = QColor(255, 69, 0)  # Orange-red, very noticeable
+            for col_idx in range(self.columnCount()):
+                item = self.item(row_idx, col_idx)
+                if item:
+                    item.setBackground(tie_break_color)
+                    item.setForeground(QColor(255, 255, 255))  # White text
+                    # Make it bold too
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
+        elif match.status == MatchStatus.LIVE:
+            # Subtle green tint for live matches
+            live_color = QColor(144, 238, 144)  # Light green
             for col_idx in range(self.columnCount()):
                 item = self.item(row_idx, col_idx)
                 if item:
                     item.setBackground(live_color)
-                    # item.setForeground(QColor(Qt.GlobalColor.white)) # If needed for contrast
+                    item.setForeground(QColor(0, 100, 0))  # Dark green text
         elif match.status == MatchStatus.FINISHED:
-            finished_color = QColor(Qt.GlobalColor.gray).lighter(130)
+            # Light gray for finished matches
+            finished_color = QColor(245, 245, 245)  # Very light gray
             for col_idx in range(self.columnCount()):
                 item = self.item(row_idx, col_idx)
                 if item:
                     item.setBackground(finished_color)
+                    item.setForeground(QColor(105, 105, 105))  # Dark gray text
+        elif match.status == MatchStatus.SCHEDULED:
+            # Very subtle blue tint for scheduled matches
+            scheduled_color = QColor(240, 248, 255)  # Alice blue - barely noticeable
+            for col_idx in range(self.columnCount()):
+                item = self.item(row_idx, col_idx)
+                if item:
+                    item.setBackground(scheduled_color)
+                    item.setForeground(QColor(0, 0, 139))  # Dark blue text
+        # Default (no special coloring) for other statuses
 
     def get_selected_match(self) -> Optional[TennisMatch]:
         """Returns the TennisMatch object for the currently selected row."""

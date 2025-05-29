@@ -216,8 +216,8 @@ class DarkTheme(Theme):
 
         /* Tables */
         QTableWidget {
-            background-color: #191919;
-            alternate-background-color: #2a2a2a;
+            background-color: #353535; /* Match QMainWindow background */
+            alternate-background-color: #404040; /* Consistent with headers/borders */
             color: #ffffff;
             gridline-color: #404040;
             selection-background-color: #2a82da;
