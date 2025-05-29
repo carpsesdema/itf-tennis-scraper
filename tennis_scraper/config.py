@@ -1,87 +1,105 @@
 """
-Configuration management for ITF Tennis Scraper.
+Configuration management for ITF Tennis Scraper - OPTIMIZED FOR SLOW COMPUTERS.
 """
 
 import json
 import logging
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
-from typing import Dict, Any, Optional, List # Added List
+from typing import Dict, Any, Optional, List
 
 from .utils.logging import get_logger
 
 
-
 @dataclass
 class ScrapingConfig:
-    """Configuration for scraping operations."""
-    delay_between_requests: int = 2
-    request_timeout: int = 10
-    max_retries: int = 3
-    headless_browser: bool = True
+    """Configuration for scraping operations - OPTIMIZED FOR SLOW SYSTEMS."""
+    # INCREASED delays and timeouts for slow computers
+    delay_between_requests: int = 8  # Increased from 2 to 8 seconds
+    request_timeout: int = 45  # Increased from 10 to 45 seconds
+    max_retries: int = 2  # Reduced from 3 to 2 retries to save time
+    headless_browser: bool = True  # Force headless for performance
     user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+
+    # ONLY flashscore enabled - removed other sources for speed
     sources_enabled: Dict[str, bool] = field(default_factory=lambda: {
         'flashscore': True,
-        # Removed sofascore - only need flashscore for bet365 verification
     })
+
+    # Flashscore-specific settings - OPTIMIZED for slow computers
     flashscore_bet365_indicator_fragment: str = "/549/"
     flashscore_match_tie_break_keywords: List[str] = field(
         default_factory=lambda: [
             "match tie break",
             "match tie-break",
-            "match tb",
             "super tiebreak",
-            "super tie-break",
-            "mtb",
-            "stb",
-            "first to 10",
-            "race to 10"
+            "first to 10"
         ]
     )
+
+    # NEW: Slow computer specific settings
+    flashscore_element_timeout: int = 60  # 60 seconds for slow computers
+    flashscore_max_matches_to_process: int = 25  # Limit matches processed
+    flashscore_max_elements_to_check: int = 100  # Limit page elements checked
+    flashscore_simplified_processing: bool = True  # Use simplified processing
 
 
 @dataclass
 class UIConfig:
-    """Configuration for user interface."""
+    """Configuration for user interface - OPTIMIZED FOR SLOW COMPUTERS."""
     theme: str = "dark"
     window_width: int = 1200
     window_height: int = 800
-    auto_refresh_interval: int = 300  # seconds
+    auto_refresh_interval: int = 600  # 10 minutes instead of 5 for slow computers
     show_live_only: bool = True
+
+    # NEW: Slow computer UI optimizations
+    throttle_ui_updates: bool = True  # Throttle UI updates
+    ui_update_interval: int = 10  # Update UI max every 10 seconds
+    reduce_animations: bool = True  # Reduce animations for performance
+    limit_log_lines: int = 500  # Limit log viewer lines (was 1000)
 
 
 @dataclass
 class UpdateConfig:
-    """Configuration for update system."""
-    check_on_startup: bool = True
-    frequency: str = "weekly"  # never, daily, weekly, monthly
+    """Configuration for update system - SIMPLIFIED FOR SLOW COMPUTERS."""
+    check_on_startup: bool = False  # Disabled for slow computers to speed startup
+    frequency: str = "never"  # Disabled updates for slow computers
     auto_download: bool = False
     github_repo: str = "carpsesdema/itf-tennis-scraper"
-    update_url: str = ""  # Will be set from github_repo
+    update_url: str = ""
 
 
 @dataclass
 class LoggingConfig:
-    """Configuration for logging."""
-    level: str = "INFO"
+    """Configuration for logging - OPTIMIZED FOR SLOW COMPUTERS."""
+    level: str = "INFO"  # Keep INFO level but optimize file handling
     file_path: str = "tennis_scraper.log"
-    max_file_size: int = 10 * 1024 * 1024  # 10MB
-    backup_count: int = 5
+    max_file_size: int = 5 * 1024 * 1024  # Reduced from 10MB to 5MB
+    backup_count: int = 3  # Reduced from 5 to 3 backups
+
+    # NEW: Slow computer logging optimizations
+    reduce_debug_logging: bool = True  # Reduce verbose logging
+    async_logging: bool = False  # Disable async logging for simplicity
 
 
 @dataclass
 class ExportConfig:
-    """Configuration for data export."""
-    default_format: str = "csv"
-    include_metadata: bool = True
+    """Configuration for data export - SIMPLIFIED FOR SLOW COMPUTERS."""
+    default_format: str = "csv"  # CSV is fastest
+    include_metadata: bool = False  # Reduce metadata to speed up exports
     timestamp_format: str = "%Y-%m-%d %H:%M:%S"
+
+    # NEW: Export optimizations for slow computers
+    limit_export_rows: int = 1000  # Limit exports to 1000 rows max
+    simple_export_format: bool = True  # Use simplified export format
 
 
 class Config:
-    """Main configuration class."""
+    """Main configuration class - OPTIMIZED FOR SLOW COMPUTERS."""
 
     def __init__(self):
-        """Initialize configuration with defaults."""
+        """Initialize configuration with slow computer optimizations."""
         self.scraping = ScrapingConfig()
         self.ui = UIConfig()
         self.updates = UpdateConfig()
@@ -94,9 +112,12 @@ class Config:
 
         self.logger = get_logger(__name__)
 
+        # Log slow computer mode
+        self.logger.info("🐌 Configuration optimized for SLOW COMPUTER mode")
+
     @classmethod
     def load_from_file(cls, config_path: Optional[str] = None) -> 'Config':
-        """Load configuration from file."""
+        """Load configuration from file with slow computer defaults."""
         if config_path is None:
             config_path = cls.get_default_config_path()
 
@@ -110,13 +131,13 @@ class Config:
 
                 # Update configuration from file
                 config._update_from_dict(data)
-                config.logger.info(f"Configuration loaded from {config_file}")
+                config.logger.info(f"🐌 Slow computer config loaded from {config_file}")
 
             except Exception as e:
                 config.logger.warning(f"Failed to load config from {config_file}: {e}")
-                config.logger.info("Using default configuration")
+                config.logger.info("Using slow computer defaults")
         else:
-            config.logger.info("No config file found, using defaults")
+            config.logger.info("🐌 No config file found, using slow computer defaults")
 
         return config
 
@@ -132,7 +153,7 @@ class Config:
             with open(config_file, 'w', encoding='utf-8') as f:
                 json.dump(self.to_dict(), f, indent=2)
 
-            self.logger.info(f"Configuration saved to {config_file}")
+            self.logger.info(f"🐌 Slow computer config saved to {config_file}")
 
         except Exception as e:
             self.logger.error(f"Failed to save config to {config_file}: {e}")
@@ -144,7 +165,8 @@ class Config:
             'ui': asdict(self.ui),
             'updates': asdict(self.updates),
             'logging': asdict(self.logging),
-            'export': asdict(self.export)
+            'export': asdict(self.export),
+            'slow_computer_mode': True  # Mark as slow computer config
         }
 
     def _update_from_dict(self, data: Dict[str, Any]):
@@ -158,7 +180,7 @@ class Config:
         if 'updates' in data:
             self._update_dataclass(self.updates, data['updates'])
             # Update derived URL if repo changed
-            if not data['updates'].get('update_url'): # type: ignore
+            if not data['updates'].get('update_url'):
                 self.updates.update_url = f"https://api.github.com/repos/{self.updates.github_repo}/releases/latest"
 
         if 'logging' in data:
@@ -176,62 +198,90 @@ class Config:
     @staticmethod
     def get_default_config_path() -> str:
         """Get the default configuration file path."""
-        # Use user's config directory
         config_dir = Path.home() / ".config" / "tennis_scraper"
-        return str(config_dir / "config.json")
+        return str(config_dir / "slow_computer_config.json")
 
     def validate(self) -> bool:
-        """Validate configuration values."""
+        """Validate configuration values with slow computer considerations."""
         errors = []
 
-        # Validate scraping config
-        if self.scraping.delay_between_requests < 1:
-            errors.append("delay_between_requests must be at least 1 second")
+        # More lenient validation for slow computers
+        if self.scraping.delay_between_requests < 5:  # Minimum 5 seconds for slow computers
+            errors.append("delay_between_requests must be at least 5 seconds for slow computers")
 
-        if self.scraping.request_timeout < 5:
-            errors.append("request_timeout must be at least 5 seconds")
+        if self.scraping.request_timeout < 30:  # Minimum 30 seconds for slow computers
+            errors.append("request_timeout must be at least 30 seconds for slow computers")
 
-        # Validate UI config
-        if self.ui.auto_refresh_interval < 30:
-            errors.append("auto_refresh_interval must be at least 30 seconds")
-
-        # Validate update config
-        valid_frequencies = ['never', 'daily', 'weekly', 'monthly']
-        if self.updates.frequency not in valid_frequencies:
-            errors.append(f"update frequency must be one of: {valid_frequencies}")
+        if self.ui.auto_refresh_interval < 300:  # Minimum 5 minutes for slow computers
+            errors.append("auto_refresh_interval must be at least 300 seconds (5 minutes) for slow computers")
 
         # Log errors
         for error in errors:
-            self.logger.error(f"Configuration validation error: {error}")
+            self.logger.error(f"🐌 Slow computer config validation error: {error}")
 
         return len(errors) == 0
 
     def get_scraper_config(self, scraper_name: str) -> Dict[str, Any]:
-        """Get configuration for a specific scraper."""
-        # Base configuration common to all scrapers (or parts of scraping process)
+        """Get configuration for a specific scraper with slow computer optimizations."""
         base_config = {
             'delay_between_requests': self.scraping.delay_between_requests,
             'request_timeout': self.scraping.request_timeout,
             'max_retries': self.scraping.max_retries,
-            'headless_browser': self.scraping.headless_browser,
+            'headless_browser': True,  # Force headless for slow computers
             'user_agent': self.scraping.user_agent,
-            'enabled': self.scraping.sources_enabled.get(scraper_name, False)
+            'enabled': self.scraping.sources_enabled.get(scraper_name, False),
+            'slow_computer_mode': True  # Flag for scrapers
         }
-        # Add scraper-specific configurations
+
+        # Add scraper-specific slow computer optimizations
         if scraper_name == 'flashscore':
-            base_config['flashscore_bet365_indicator_fragment'] = self.scraping.flashscore_bet365_indicator_fragment
-            base_config['flashscore_match_tie_break_keywords'] = self.scraping.flashscore_match_tie_break_keywords
-        # Add other scraper specific configs here if needed in the future
-        # elif scraper_name == 'sofascore':
-        #     base_config['sofascore_api_key'] = self.scraping.sofascore_api_key # Example
+            base_config.update({
+                'flashscore_bet365_indicator_fragment': self.scraping.flashscore_bet365_indicator_fragment,
+                'flashscore_match_tie_break_keywords': self.scraping.flashscore_match_tie_break_keywords,
+                'flashscore_element_timeout': self.scraping.flashscore_element_timeout,
+                'flashscore_max_matches_to_process': self.scraping.flashscore_max_matches_to_process,
+                'flashscore_max_elements_to_check': self.scraping.flashscore_max_elements_to_check,
+                'flashscore_simplified_processing': self.scraping.flashscore_simplified_processing
+            })
 
         return base_config
 
     def update_scraper_enabled(self, scraper_name: str, enabled: bool):
         """Update enabled status for a scraper."""
         self.scraping.sources_enabled[scraper_name] = enabled
-        self.logger.info(f"Scraper '{scraper_name}' {'enabled' if enabled else 'disabled'}")
+        self.logger.info(f"🐌 Slow computer mode: Scraper '{scraper_name}' {'enabled' if enabled else 'disabled'}")
 
     def get_enabled_scrapers(self) -> list[str]:
         """Get list of enabled scrapers."""
-        return [name for name, enabled in self.scraping.sources_enabled.items() if enabled]
+        enabled = [name for name, enabled in self.scraping.sources_enabled.items() if enabled]
+        self.logger.info(f"🐌 Enabled scrapers for slow computer: {enabled}")
+        return enabled
+
+    def optimize_for_slow_computer(self):
+        """Apply additional optimizations for very slow computers."""
+        self.logger.info("🐌🐌 Applying EXTRA slow computer optimizations...")
+
+        # Extra conservative settings
+        self.scraping.delay_between_requests = max(10, self.scraping.delay_between_requests)
+        self.scraping.request_timeout = max(60, self.scraping.request_timeout)
+        self.scraping.max_retries = 1  # Only 1 retry for very slow computers
+
+        self.ui.auto_refresh_interval = max(900, self.ui.auto_refresh_interval)  # 15 minutes
+        self.ui.throttle_ui_updates = True
+        self.ui.ui_update_interval = 15  # Update UI max every 15 seconds
+
+        # Disable updates completely
+        self.updates.check_on_startup = False
+        self.updates.frequency = "never"
+
+        # Reduce logging
+        self.logging.level = "WARNING"  # Only warnings and errors
+        self.logging.reduce_debug_logging = True
+
+        self.logger.warning("🐌🐌 EXTRA slow computer mode activated!")
+
+    def is_slow_computer_mode(self) -> bool:
+        """Check if running in slow computer mode."""
+        return (self.scraping.delay_between_requests >= 8 and
+                self.scraping.request_timeout >= 45 and
+                self.ui.auto_refresh_interval >= 600)
