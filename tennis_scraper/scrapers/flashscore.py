@@ -10,7 +10,8 @@ from playwright.async_api import (
     BrowserContext,
     Browser,
     ElementHandle,
-    Route
+    Route,
+    JSHandle  # Import JSHandle for type hinting if needed
 )
 
 from .base import BaseScraper
@@ -120,7 +121,7 @@ class FlashscoreScraper(BaseScraper):
     FLASHCORE_BASE_URL = "https://www.flashscoreusa.com"
     TENNIS_URL_PATH = "/tennis/"
     MAX_MATCHES_TO_PROCESS = 30
-    MAX_ELEMENTS_TO_CHECK = 500
+    MAX_HEADERS_TO_CHECK = 200
     SIMPLIFIED_TIE_BREAK_CHECK = True
 
     async def get_source_name(self) -> str:
@@ -307,9 +308,8 @@ class FlashscoreScraper(BaseScraper):
         if any(s in name_lower for s in ["m60", "w60", "60k"]): return TournamentLevel.ITF_60K
         if any(s in name_lower for s in ["m80", "w80", "80k"]): return TournamentLevel.ITF_80K
         if any(s in name_lower for s in ["m100", "w100", "100k"]): return TournamentLevel.ITF_100K
-        if "itf men" in name_lower or "itf women" in name_lower or "itf" in name_lower:  # General ITF check
-            if "men" in name_lower and "singles" in name_lower: return TournamentLevel.ITF_25K  # Default for ITF Men Singles
-            # Could add more specific defaults for ITF Women or Doubles if needed
+        if "itf men" in name_lower or "itf women" in name_lower or "itf" in name_lower:
+            if "men" in name_lower and "singles" in name_lower: return TournamentLevel.ITF_25K
             return TournamentLevel.ITF_25K
         return TournamentLevel.UNKNOWN
 
@@ -364,9 +364,8 @@ class FlashscoreScraper(BaseScraper):
         context: Optional[BrowserContext] = None
         page: Optional[Page] = None
 
-        processed_elements_count = 0
-        total_elements_on_page = 0
-        all_page_elements_list: List[ElementHandle] = []
+        processed_headers_count = 0
+        processed_match_elements_total = 0
 
         try:
             self.logger.info("🚀 Starting Playwright...")
@@ -410,110 +409,139 @@ class FlashscoreScraper(BaseScraper):
             current_page_url = page.url
 
             self.logger.info("📜 Scrolling down on current tab to load all matches...")
-            for i in range(10):
-                await page.evaluate("window.scrollBy(0, window.innerHeight * 2)")
+            for i in range(15):
+                await page.evaluate("window.scrollBy(0, window.innerHeight * 1.5)")
                 self.logger.debug(f"Scroll attempt {i + 1}")
-                await page.wait_for_timeout(1500)
+                await page.wait_for_timeout(1000)
 
-            all_elements_selector = "div.wcl-header_uBhYi.wclLeagueHeader, a.eventRowLink, div.event__match, div.event__match--scheduled, div.event__match--live, div.event__match--static"
-            all_page_elements_list = await page.query_selector_all(all_elements_selector)
-            total_elements_on_page = len(all_page_elements_list)
+            league_header_selector = "div.wcl-header_uBhYi.wclLeagueHeader"
+            all_league_headers = await page.query_selector_all(league_header_selector)
+
             self.logger.info(
-                f"Found {total_elements_on_page} potential header/match elements on the page using selector: '{all_elements_selector}'.")
+                f"Found {len(all_league_headers)} league headers using selector: '{league_header_selector}'. Will check up to {self.MAX_HEADERS_TO_CHECK}.")
 
             itf_bet365_matches_count = 0
-            current_processing_tournament_context = "Unknown Tournament (Context Not Set)"
-            is_context_itf_men_singles = False
 
-            elements_to_iterate = all_page_elements_list[:self.MAX_ELEMENTS_TO_CHECK]
-            processed_elements_count = len(elements_to_iterate)
-            self.logger.info(
-                f"Will process up to {processed_elements_count} elements (limited by MAX_ELEMENTS_TO_CHECK: {self.MAX_ELEMENTS_TO_CHECK}).")
-
-            for idx, element in enumerate(elements_to_iterate):
+            for header_idx, header_element in enumerate(all_league_headers[:self.MAX_HEADERS_TO_CHECK]):
+                processed_headers_count += 1
                 if itf_bet365_matches_count >= self.MAX_MATCHES_TO_PROCESS:
-                    self.logger.info(f"Reached ITF MEN-SINGLES match limit ({self.MAX_MATCHES_TO_PROCESS}). Stopping.")
+                    self.logger.info(
+                        f"Reached ITF MEN-SINGLES match limit ({self.MAX_MATCHES_TO_PROCESS}). Stopping header processing.")
                     break
 
-                element_classes = (await element.get_attribute("class") or "").lower()
-                # Check if the element is a tournament header using the specific classes you found
-                is_tournament_header_element = "wclleagueheader" in element_classes and "wcl-header_ubhyi" in element_classes
+                title_box_el = await header_element.query_selector("div.event__titleBox")
+                current_tournament_name = ""
+                if title_box_el:
+                    part1_el = await title_box_el.query_selector("span.wcl-overline_rOFfd")
+                    part2_el = await title_box_el.query_selector("a.wcl-link_bLtj3")
+                    part1_text = (await part1_el.text_content() or "").strip() if part1_el else ""
+                    part2_text = (await part2_el.text_content() or "").strip() if part2_el else ""
+                    if part1_text and part2_text:
+                        current_tournament_name = f"{part1_text}: {part2_text}"
+                    elif part1_text:
+                        current_tournament_name = part1_text
+                    elif part2_text:
+                        current_tournament_name = part2_text
 
-                if is_tournament_header_element:
-                    title_box_el = await element.query_selector("div.event__titleBox")
-                    extracted_full_tournament_name = ""
-                    if title_box_el:
-                        part1_el = await title_box_el.query_selector("span.wcl-overline_rOFfd")
-                        part2_el = await title_box_el.query_selector("a.wcl-link_bLtj3")
-                        part1_text = (await part1_el.text_content() or "").strip() if part1_el else ""
-                        part2_text = (await part2_el.text_content() or "").strip() if part2_el else ""
-                        if part1_text and part2_text:
-                            extracted_full_tournament_name = f"{part1_text}: {part2_text}"
-                        elif part1_text:
-                            extracted_full_tournament_name = part1_text
-                        elif part2_text:
-                            extracted_full_tournament_name = part2_text
+                self.logger.info(f"Header Idx {header_idx}: Extracted Name: '{current_tournament_name}'")
 
+                name_lower = current_tournament_name.lower()
+                if not ("itf" in name_lower and "men" in name_lower and "singles" in name_lower):
                     self.logger.info(
-                        f"Element {idx} IS a Tournament Header. Extracted Name: '{extracted_full_tournament_name}'")
-                    current_processing_tournament_context = extracted_full_tournament_name  # Update context with the new header
+                        f"Header '{current_tournament_name}' is NOT ITF Men-Singles. Skipping matches under it.")
+                    continue
 
-                    name_lower = current_processing_tournament_context.lower()
-                    # Explicitly check for "ITF", "MEN", and "SINGLES"
-                    if "itf" in name_lower and "men" in name_lower and "singles" in name_lower:
-                        is_context_itf_men_singles = True
-                        self.logger.info(
-                            f"--- Context Updated: Now processing matches under ITF MEN - SINGLES Tournament: '{current_processing_tournament_context}' ---")
-                    else:
-                        is_context_itf_men_singles = False  # Reset if not ITF Men Singles
-                        self.logger.info(
-                            f"--- Context Updated: Header is NOT ITF MEN - SINGLES: '{current_processing_tournament_context}' (Setting ITF Men Singles Context to False) ---")
-                    continue  # This element was a header, move to the next element in the main loop
+                self.logger.info(
+                    f"--- Identified ITF MEN - SINGLES Tournament: '{current_tournament_name}'. Looking for matches... ---")
 
-                # If the element was not a header, then it might be a match row.
-                # Only process it if the current context is an ITF MEN - SINGLES tournament.
-                if is_context_itf_men_singles:
-                    # Check if the element looks like a match row (e.g., contains participant info)
-                    # This helps to avoid trying to process non-match elements that might be siblings to headers
-                    home_participant_el = await element.query_selector(".event__participant--home")
-                    if home_participant_el:  # It's likely a match row
-                        self.logger.info(
-                            f"Element {idx} is a match row under current ITF MEN - SINGLES context: '{current_processing_tournament_context}'. Processing...")
+                # Get match elements under the current header
+                match_elements_js_handle: Optional[JSHandle] = await page.evaluate_handle(
+                    """(headerEl) => {
+                        const matches = [];
+                        let nextSibling = headerEl.nextElementSibling;
+                        while (nextSibling) {
+                            if (nextSibling.matches('div.wcl-header_uBhYi.wclLeagueHeader')) { break; } // Stop at next header
+                            // Check for common match row selectors
+                            if (nextSibling.matches('a.eventRowLink, div.event__match, div.event__match--scheduled, div.event__match--live, div.event__match--static')) {
+                                matches.push(nextSibling);
+                            }
+                            nextSibling = nextSibling.nextElementSibling;
+                        }
+                        return matches; // Returns an array of HTMLElements
+                    }""",
+                    header_element
+                )
+
+                if not match_elements_js_handle:
+                    self.logger.warning(
+                        f"Could not get match_elements_js_handle for header '{current_tournament_name}'")
+                    await header_element.dispose()  # Dispose the header element if we can't process its children
+                    continue
+
+                count_matches_under_header = await match_elements_js_handle.evaluate('arr => arr.length')
+                self.logger.info(
+                    f"Found {count_matches_under_header} match elements directly under '{current_tournament_name}'.")
+
+                for i in range(count_matches_under_header):
+                    if itf_bet365_matches_count >= self.MAX_MATCHES_TO_PROCESS:
+                        self.logger.info(f"Reached ITF MEN-SINGLES match limit within '{current_tournament_name}'.")
+                        break
+
+                    # Get individual match element handle from the JS array handle
+                    match_element_js_handle_item: Optional[JSHandle] = await match_elements_js_handle.evaluate_handle(
+                        '(arr, index) => arr[index]',
+                        i
+                    )
+
+                    if not match_element_js_handle_item:
+                        self.logger.warning(
+                            f"Could not get match_element_js_handle_item at index {i} for header '{current_tournament_name}'")
+                        continue
+
+                    match_element_handle = match_element_js_handle_item.as_element()
+
+                    if match_element_handle:
+                        processed_match_elements_total += 1
                         match_obj = await self._process_match_from_live_tab(
-                            element,
-                            current_processing_tournament_context,  # Pass the confirmed ITF Men Singles context
-                            idx,
+                            match_element_handle,
+                            current_tournament_name,
+                            processed_match_elements_total,
+                            # Use a global index for logging this specific processing step
                             bookmaker_id_to_check,
                             current_page_url
                         )
-
                         if match_obj:
                             itf_bet365_matches_count += 1
                             matches_found.append(match_obj)
                             if progress_callback:
                                 await progress_callback(match_obj)
-
                             if match_obj.metadata.get('is_match_tie_break'):
                                 self.logger.critical(
-                                    f"ITF MEN-SINGLES TIE BREAK #{itf_bet365_matches_count}: {match_obj.home_player.name} vs {match_obj.away_player.name} from '{match_obj.tournament}'")
+                                    f"ITF MEN-SINGLES TIE BREAK #{itf_bet365_matches_count}: {match_obj.home_player.name} vs {match_obj.away_player_name} from '{match_obj.tournament}'")
                             else:
                                 self.logger.info(
                                     f"ITF MEN-SINGLES BET365 MATCH #{itf_bet365_matches_count}: {match_obj.home_player.name} vs {match_obj.away_player.name} from '{match_obj.tournament}'")
-                    # else:
-                    # self.logger.debug(f"Element {idx} under ITF Men Singles context '{current_processing_tournament_context}' but doesn't look like a match row (no home participant). Skipping.")
-                # else:
-                # self.logger.debug(f"Element {idx} skipped: current context ('{current_processing_tournament_context}') is not ITF Men Singles.")
+                        # Dispose individual item handle after processing if it's an ElementHandle
+                        # No, match_element_handle is the ElementHandle, match_element_js_handle_item is its JSHandle wrapper
+                        await match_element_js_handle_item.dispose()
+                    else:
+                        self.logger.warning(
+                            f"match_element_js_handle_item at index {i} could not be converted to ElementHandle.")
+                        await match_element_js_handle_item.dispose()  # Still dispose the JSHandle
+
+                await match_elements_js_handle.dispose()  # Dispose the JSHandle for the array of matches
+                await header_element.dispose()  # Dispose the header element handle
 
             success = True
             self.logger.info(
-                f"✅ SCRAPING COMPLETE (LIVE TAB STRATEGY)! Processed {processed_elements_count} elements from page.")
+                f"✅ SCRAPING COMPLETE! Processed {processed_headers_count} headers and {processed_match_elements_total} relevant match elements.")
             self.logger.info(f"📊 Found: {len(matches_found)} ITF MEN - SINGLES Bet365 matches.")
             tie_break_count = len([m for m in matches_found if m.metadata.get('is_match_tie_break')])
             if tie_break_count > 0:
                 self.logger.critical(f"🚨 {tie_break_count} ITF MEN - SINGLES TIE BREAK MATCHES FOUND!")
-            if not matches_found and total_elements_on_page > 0:
+            if not matches_found and processed_headers_count > 0:
                 self.logger.warning(
-                    "Found elements on page, but none were classified as ITF MEN - SINGLES Bet365 matches. Check tournament header identification on LIVE tab, the MEN - SINGLES filter, and Bet365 indicator logic.")
+                    "Processed headers, including potential ITF Men Singles, but found no qualifying Bet365 matches under them.")
 
         except Exception as e:
             self.logger.error(f"❌ Scraping error: {e}", exc_info=True)
@@ -534,13 +562,14 @@ class FlashscoreScraper(BaseScraper):
             duration_seconds=duration,
             timestamp=datetime.now(timezone.utc),
             metadata={
-                'processed_elements_from_page': processed_elements_count,
-                'total_elements_on_page': total_elements_on_page,
+                'processed_headers': processed_headers_count,
+                'processed_match_elements_total': processed_match_elements_total,
                 'itf_men_singles_bet365_matches_found': len(matches_found),
                 'tie_break_matches': len([m for m in matches_found if m.metadata.get('is_match_tie_break')]),
                 'attempted_live_tab_click': True,
                 'live_tab_successfully_clicked': live_tab_successfully_clicked_flag,
-                'match_limit_applied': self.MAX_MATCHES_TO_PROCESS
+                'match_limit_applied': self.MAX_MATCHES_TO_PROCESS,
+                'header_limit_applied': self.MAX_HEADERS_TO_CHECK
             }
         )
 
