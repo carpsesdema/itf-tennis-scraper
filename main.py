@@ -32,106 +32,177 @@ except ImportError as e:
 
 
 def setup_playwright_for_packaged_app():
-    """Setup Playwright browsers for packaged application."""
-    if not getattr(sys, 'frozen', False):
-        # Not a packaged app, return early
+    """Setup Playwright browsers for packaged application with detailed logging."""
+    is_packaged = getattr(sys, 'frozen', False)
+
+    if not is_packaged:
+        print("🔧 Running in development mode - Playwright should work normally")
         return True
 
-    print("🎭 Setting up Playwright for packaged application...")
+    print("🎭 PACKAGED APP DETECTED - Setting up Playwright browsers...")
+    print(f"📁 Executable path: {sys.executable}")
+    print(f"📁 Current working directory: {os.getcwd()}")
 
     try:
-        # Set environment variables for Playwright
-        if hasattr(sys, '_MEIPASS'):
-            # PyInstaller temp directory
-            bundle_dir = Path(sys._MEIPASS)
-
-            # Look for included browsers
-            browser_dirs = [
-                bundle_dir / "playwright_browsers",
-                bundle_dir / "_internal" / "playwright_browsers"
-            ]
-
-            for browser_dir in browser_dirs:
-                if browser_dir.exists():
-                    print(f"✅ Found packaged browsers at: {browser_dir}")
-                    os.environ['PLAYWRIGHT_BROWSERS_PATH'] = str(browser_dir)
-                    return True
-
-        # If browsers not found in package, try to install them
-        print("🔄 Browsers not found in package, attempting installation...")
-
-        # Try to install to user directory
-        user_browser_dir = Path.home() / ".cache" / "ms-playwright"
-        if sys.platform == "win32":
-            user_browser_dir = Path.home() / "AppData" / "Local" / "ms-playwright"
-
-        # Create directory if it doesn't exist
-        user_browser_dir.mkdir(parents=True, exist_ok=True)
-
-        # Try to install browsers
+        # First, let's test if Playwright can be imported
         try:
-            # Method 1: Use playwright install command
-            install_cmd = [sys.executable, "-m", "playwright", "install", "chromium", "--with-deps"]
+            import playwright
+            print(f"✅ Playwright imported successfully from: {playwright.__file__}")
+        except ImportError as e:
+            print(f"❌ CRITICAL: Cannot import playwright: {e}")
+            return False
 
-            print("🔄 Installing Chromium browser...")
+        # Check if we're in PyInstaller bundle
+        if hasattr(sys, '_MEIPASS'):
+            bundle_dir = Path(sys._MEIPASS)
+            print(f"📦 PyInstaller bundle directory: {bundle_dir}")
+
+            # List contents to see what's included
+            print("📂 Bundle contents:")
+            try:
+                for item in bundle_dir.iterdir():
+                    if item.is_dir():
+                        print(f"  📁 {item.name}/")
+                    else:
+                        print(f"  📄 {item.name}")
+            except Exception as e:
+                print(f"⚠️ Cannot list bundle contents: {e}")
+
+        # Check for system Chrome/Chromium first (most reliable for packaged apps)
+        print("🔍 Checking for system Chrome/Chromium...")
+        chrome_paths = [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            r"C:\Users\{}\AppData\Local\Google\Chrome\Application\chrome.exe".format(os.getenv('USERNAME', '')),
+            "/usr/bin/google-chrome",
+            "/usr/bin/chromium-browser",
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        ]
+
+        for chrome_path in chrome_paths:
+            if os.path.exists(chrome_path):
+                print(f"✅ Found system Chrome: {chrome_path}")
+                os.environ['PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH'] = chrome_path
+
+                # Test if Chrome works
+                try:
+                    result = subprocess.run([chrome_path, "--version"],
+                                            capture_output=True, text=True, timeout=10)
+                    if result.returncode == 0:
+                        print(f"✅ Chrome version: {result.stdout.strip()}")
+                        return True
+                except Exception as e:
+                    print(f"⚠️ Chrome test failed: {e}")
+
+        print("❌ No system Chrome found")
+
+        # Try to find Playwright browsers
+        print("🔍 Looking for Playwright browsers...")
+
+        # Common Playwright browser locations
+        possible_paths = []
+
+        # Windows locations
+        if sys.platform == "win32":
+            possible_paths.extend([
+                Path.home() / "AppData" / "Local" / "ms-playwright",
+                Path.cwd() / "ms-playwright",
+                Path(sys.executable).parent / "ms-playwright"
+            ])
+        # Linux/Mac locations
+        else:
+            possible_paths.extend([
+                Path.home() / ".cache" / "ms-playwright",
+                Path("/usr/share/ms-playwright"),
+                Path.cwd() / "ms-playwright"
+            ])
+
+        for browser_path in possible_paths:
+            print(f"  Checking: {browser_path}")
+            if browser_path.exists():
+                print(f"✅ Found Playwright browsers at: {browser_path}")
+                os.environ['PLAYWRIGHT_BROWSERS_PATH'] = str(browser_path)
+
+                # Look for Chromium executable
+                chromium_paths = [
+                    browser_path / "chromium-*/chrome-win" / "chrome.exe",
+                    browser_path / "chromium-*/chrome-linux" / "chrome",
+                    browser_path / "chromium-*/chrome-mac" / "Chromium.app/Contents/MacOS/Chromium"
+                ]
+
+                for pattern in chromium_paths:
+                    import glob
+                    matches = glob.glob(str(pattern))
+                    if matches:
+                        chromium_exe = matches[0]
+                        print(f"✅ Found Chromium executable: {chromium_exe}")
+                        os.environ['PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH'] = chromium_exe
+                        return True
+
+        print("❌ No Playwright browsers found")
+
+        # Try to install browsers to user directory
+        print("🔄 Attempting to install Playwright browsers...")
+
+        user_dir = Path.home() / "AppData" / "Local" / "ms-playwright" if sys.platform == "win32" else Path.home() / ".cache" / "ms-playwright"
+        user_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            # Try using the current Python executable
+            install_cmd = [sys.executable, "-m", "playwright", "install", "chromium"]
+            print(f"🔄 Running: {' '.join(install_cmd)}")
+
             result = subprocess.run(install_cmd,
                                     capture_output=True,
                                     text=True,
-                                    timeout=300,  # 5 minute timeout
-                                    cwd=str(user_browser_dir.parent))
+                                    timeout=180,  # 3 minute timeout
+                                    cwd=str(user_dir.parent))
+
+            print(f"📋 Install stdout: {result.stdout}")
+            print(f"📋 Install stderr: {result.stderr}")
+            print(f"📋 Install return code: {result.returncode}")
 
             if result.returncode == 0:
-                print("✅ Browser installation completed successfully")
+                print("✅ Browser installation completed")
                 return True
             else:
-                print(f"⚠️ Browser installation had issues: {result.stderr}")
+                print(f"❌ Browser installation failed with code {result.returncode}")
 
         except subprocess.TimeoutExpired:
-            print("⚠️ Browser installation timed out")
-        except FileNotFoundError:
-            print("⚠️ Playwright command not found in packaged app")
+            print("❌ Browser installation timed out")
         except Exception as e:
-            print(f"⚠️ Browser installation failed: {e}")
+            print(f"❌ Browser installation error: {e}")
 
-        # Method 2: Try programmatic installation
+        # Final attempt - try to test Playwright directly
+        print("🔄 Testing Playwright directly...")
         try:
-            print("🔄 Trying programmatic browser installation...")
             from playwright.sync_api import sync_playwright
 
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                browser.close()
-                print("✅ Browser test successful")
-                return True
+                print("✅ Playwright context created successfully")
+
+                # Try to get browser executable path
+                try:
+                    browser_path = p.chromium.executable_path
+                    print(f"✅ Chromium executable path: {browser_path}")
+                    if browser_path and os.path.exists(browser_path):
+                        print("✅ Chromium executable exists")
+                        return True
+                    else:
+                        print("❌ Chromium executable not found")
+                except Exception as e:
+                    print(f"❌ Error getting Chromium path: {e}")
 
         except Exception as e:
-            print(f"⚠️ Programmatic browser test failed: {e}")
+            print(f"❌ Playwright test failed: {e}")
 
-        # Method 3: Check if system Chrome/Chromium exists
-        try:
-            print("🔄 Looking for system Chrome/Chromium...")
-            chrome_paths = [
-                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-                "/usr/bin/google-chrome",
-                "/usr/bin/chromium-browser",
-                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-            ]
-
-            for chrome_path in chrome_paths:
-                if os.path.exists(chrome_path):
-                    print(f"✅ Found system Chrome at: {chrome_path}")
-                    os.environ['PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH'] = chrome_path
-                    return True
-
-        except Exception as e:
-            print(f"⚠️ System Chrome detection failed: {e}")
-
-        print("❌ Could not setup browsers - scraping may fail")
+        print("❌ All browser setup methods failed")
         return False
 
     except Exception as e:
         print(f"❌ Critical error in browser setup: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -144,9 +215,26 @@ def main():
 
         logger.info("Starting ITF Tennis Scraper...")
 
-        # Setup Playwright browsers for packaged app
-        if not setup_playwright_for_packaged_app():
-            logger.warning("Playwright browser setup had issues - scraping may not work properly")
+        # Setup Playwright browsers for packaged app with detailed logging
+        browser_setup_success = setup_playwright_for_packaged_app()
+
+        if not browser_setup_success:
+            logger.error("❌ CRITICAL: Playwright browser setup failed!")
+            if getattr(sys, 'frozen', False):
+                # Show error message for packaged app
+                try:
+                    from PySide6.QtWidgets import QApplication, QMessageBox
+                    app = QApplication(sys.argv)
+                    QMessageBox.critical(None, "Browser Setup Failed",
+                                         "Could not setup browsers for web scraping.\n\n"
+                                         "Please install Google Chrome or try running as administrator.\n\n"
+                                         "Check the console output for detailed error information.")
+                    return 1
+                except:
+                    print("❌ Could not show error dialog")
+                    return 1
+        else:
+            logger.info("✅ Playwright browser setup completed successfully")
 
         # Load configuration
         config = Config.load_from_file()
